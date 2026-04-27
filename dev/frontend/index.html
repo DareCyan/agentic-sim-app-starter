@@ -8,7 +8,83 @@
   </head>
   <body>
     <main class="shell">
-      <section class="card hero-card">
+      <nav class="tab-bar">
+        <button class="tab is-active" data-tab="workflow">工作流</button>
+        <button class="tab" data-tab="exception">异常场景</button>
+        <button class="tab" data-tab="sim-build">图片仿真APP</button>
+        <button class="tab" data-tab="app-build">代码仿真APP</button>
+      </nav>
+
+      <!-- Tab content panes -->
+      <div class="tab-pane is-active" data-pane="workflow">
+        <div class="wf-layout">
+          <!-- Left sidebar -->
+          <aside class="wf-sidebar">
+            <div class="wf-sidebar-header">
+            </div>
+            <ul class="wf-list" id="wf-list"></ul>
+          </aside>
+
+          <!-- Main area -->
+          <div class="wf-main">
+
+            <!-- Workflow detail view (when a workflow is opened) -->
+            <div id="wf-detail-view" class="wf-detail-view">
+              <div class="wf-detail-topbar">
+                <div class="wf-detail-title-area">
+                  <h2 id="wf-detail-title">-</h2>
+                  <span id="wf-detail-desc" class="card-note">-</span>
+                </div>
+                <div class="wf-detail-actions">
+                  <button id="wf-run-btn" class="wf-btn wf-btn-accent" title="运行工作流">▶ 运行</button>
+                </div>
+              </div>
+
+              <!-- Split: flow graph top, terminal bottom -->
+              <div class="wf-split">
+                <div class="wf-flow-area">
+                  <svg id="wf-flow-svg" class="wf-flow-svg"></svg>
+                </div>
+                <div class="wf-terminal-area">
+                  <div class="wf-terminal-header">
+                    <span>Chat</span>
+                    <span class="wf-terminal-badge" id="wf-terminal-status">待命</span>
+                  </div>
+                  <div class="wf-terminal-body" id="wf-terminal-body">
+                    <div class="wf-terminal-line wf-terminal-muted">← 选择一个工作流开始</div>
+                  </div>
+                  <div class="wf-cmd-suggestions" id="wf-cmd-suggestions"></div>
+                  <div class="wf-terminal-input-row">
+                    <span class="wf-terminal-prompt">❯</span>
+                    <input type="text" id="wf-terminal-input" class="wf-terminal-input" placeholder="输入命令..." disabled />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-pane" data-pane="exception">
+        <section class="card tab-placeholder-card">
+          <div class="placeholder-content">
+            <h1>异常场景</h1>
+            <p class="card-note">异常场景管理功能开发中...</p>
+          </div>
+        </section>
+      </div>
+
+      <div class="tab-pane" data-pane="sim-build">
+        <section class="card tab-placeholder-card">
+          <div class="placeholder-content">
+            <h1>仿真APP构建</h1>
+            <p class="card-note">仿真 APP 构建管理功能开发中...</p>
+          </div>
+        </section>
+      </div>
+
+      <div class="tab-pane" data-pane="app-build">
+        <section class="card hero-card">
         <div class="hero-grid">
           <div class="hero-main">
             <p class="eyebrow">Simulation Pipeline</p>
@@ -166,6 +242,7 @@
           </div>
         </section>
       </section>
+      </div>
     </main>
 
     <script src="/app.js"></script>
