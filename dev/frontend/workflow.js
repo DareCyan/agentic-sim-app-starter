@@ -91,6 +91,15 @@ function wfApplySuggestion() {
 }
 
 // Real pipeline integration
+const WF_REAL_SUBTASK_MAP = {
+  '任务初始化': ['参数校验', '环境检测'],
+  '仿真基线准备': ['基线同步', '依赖安装', '配置检查'],
+  'Agent 运行时': ['Agent连接', '任务分配', '结果汇聚'],
+  '状态巡检': ['健康检测', '日志采集'],
+  '结果输出': ['产物打包', '报告生成'],
+  '完成': ['资源清理'],
+};
+
 const WF_REAL_STEPS = [
   { id: 'init', name: '任务初始化' },
   { id: 'prepare', name: '仿真基线准备' },
@@ -139,7 +148,10 @@ async function wfOpenReal(wf) {
   wfCanvas.contentGroup = null;
 
   // Default tasks before first fetch
-  wf.tasks = WF_REAL_STEPS.map((s) => ({ id: s.id, name: s.name, type: 'task', status: 'idle' }));
+  wf.tasks = WF_REAL_STEPS.map((s) => {
+    const subNames = WF_REAL_SUBTASK_MAP[s.name] || [];
+    return { id: s.id, name: s.name, type: 'task', status: 'idle', subtasks: subNames.map((n) => ({ name: n })) };
+  });
   wf.edges = [];
   for (let i = 0; i < WF_REAL_STEPS.length - 1; i++) {
     wf.edges.push({ from: WF_REAL_STEPS[i].id, to: WF_REAL_STEPS[i + 1].id });
@@ -172,7 +184,10 @@ async function wfRefreshReal(wf) {
         else if (isFailed) status = 'failed';
         else status = 'running';
       }
-      return { id: 'step' + i, name, type: 'task', status };
+      return {
+        id: 'step' + i, name, type: 'task', status,
+        subtasks: (WF_REAL_SUBTASK_MAP[name] || []).map((n) => ({ name: n })),
+      };
     });
 
     wf.edges = [];
@@ -352,7 +367,15 @@ function wfRenderFlow(wf) {
   if (!tasks.length) return;
 
   const nodeW = 190;
-  const nodeH = 68;
+  // Compute node height — extra room for subtask chips if any
+  let maxSubRows = 0;
+  tasks.forEach(t => {
+    if (t.subtasks && t.subtasks.length > 0) {
+      const rows = Math.ceil(t.subtasks.length / 3);
+      if (rows > maxSubRows) maxSubRows = rows;
+    }
+  });
+  const nodeH = maxSubRows > 0 ? 120 : 68;
   const headerH = 26;
   const gapX = 130;
   const padX = 60;
@@ -507,9 +530,10 @@ function wfRenderFlow(wf) {
       idle: '待命中', running: '执行中...', completed: '已完成',
       failed: '失败', waiting: '等待选择',
     };
+    const hasSubtasks = task.subtasks && task.subtasks.length > 0;
     const statText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     statText.setAttribute('x', x + 12);
-    statText.setAttribute('y', y + headerH + (nodeH - headerH) / 2);
+    statText.setAttribute('y', hasSubtasks ? y + headerH + 14 : y + headerH + (nodeH - headerH) / 2);
     statText.setAttribute('class', 'wf-flow-node-status');
     statText.setAttribute('dominant-baseline', 'central');
     statText.textContent = statusLabels[task.status] || task.status;
@@ -518,6 +542,45 @@ function wfRenderFlow(wf) {
     else if (task.status === 'failed') statText.setAttribute('fill', '#d04a3a');
     else if (task.status === 'waiting') statText.setAttribute('fill', '#b878d0');
     g.appendChild(statText);
+
+    // Subtask cards
+    if (hasSubtasks) {
+      const cardW = 56; const cardH = 24; const cardGap = 6;
+      const cardsPerRow = Math.max(1, Math.floor((nodeW - 16) / (cardW + cardGap)));
+      const cardStartX = x + 8;
+      const cardStartY = y + headerH + 30;
+      task.subtasks.forEach((sub, j) => {
+        const col = j % cardsPerRow;
+        const row = Math.floor(j / cardsPerRow);
+        const cx = cardStartX + col * (cardW + cardGap);
+        const cy = cardStartY + row * (cardH + 6);
+        // Card body
+        const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        bg.setAttribute('x', cx); bg.setAttribute('y', cy);
+        bg.setAttribute('width', cardW); bg.setAttribute('height', cardH);
+        bg.setAttribute('rx', 4);
+        bg.setAttribute('class', 'wf-flow-sub-card');
+        g.appendChild(bg);
+        // Colored left bar (status indicator)
+        const bar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        bar.setAttribute('x', cx + 2);
+        bar.setAttribute('y', cy + 3);
+        bar.setAttribute('width', 3);
+        bar.setAttribute('height', cardH - 6);
+        bar.setAttribute('rx', 1.5);
+        bar.setAttribute('class', 'wf-flow-sub-bar status-' + task.status);
+        g.appendChild(bar);
+        // Sub-task name
+        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        label.setAttribute('x', cx + 10);
+        label.setAttribute('y', cy + cardH / 2);
+        label.setAttribute('class', 'wf-flow-sub-label');
+        label.setAttribute('dominant-baseline', 'central');
+        label.textContent = sub.name;
+        g.appendChild(label);
+      });
+    }
+
 
     contentGroup.appendChild(g);
   });

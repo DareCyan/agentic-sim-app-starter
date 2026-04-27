@@ -562,6 +562,26 @@ body {
   filter: drop-shadow(0 0 16px rgba(144, 96, 160, 0.25));
 }
 
+/* Subtask cards inside flow nodes */
+.wf-flow-sub-card {
+  fill: #262930;
+  stroke: #3a3e48;
+  stroke-width: 1;
+}
+.wf-flow-sub-bar {
+  fill: #686e7a;
+}
+.wf-flow-sub-bar.status-completed { fill: #3a9a6a; }
+.wf-flow-sub-bar.status-running { fill: #4a8fe0; }
+.wf-flow-sub-bar.status-failed { fill: #d04a3a; }
+.wf-flow-sub-bar.status-waiting { fill: #b878d0; }
+.wf-flow-sub-label {
+  font-size: 10px;
+  fill: #b8c0d0;
+  pointer-events: none;
+  font-family: "Cascadia Code", "Fira Code", monospace;
+}
+
 /* Edges (splines) — dark theme */
 .wf-flow-edge {
   fill: none;
