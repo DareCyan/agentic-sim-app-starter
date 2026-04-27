@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import mimetypes
 import os
@@ -625,6 +626,76 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             self._send_download_file(artifact_path)
+            return
+
+        if parsed.path == "/api/issues/apps":
+            apps_path = self.server.repo_root / "dev" / "issues" / "app.csv"
+            if not apps_path.exists():
+                self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+                return
+            with apps_path.open("r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+            result = []
+            current_cat = ""
+            for row in rows:
+                val0 = row[0].strip() if row and row[0].strip() else ""
+                if val0:
+                    current_cat = val0
+                if len(row) > 1 and row[1].strip():
+                    result.append({"category": current_cat, "flow": row[1].strip()})
+            self._send_json(result)
+            return
+
+        if parsed.path == "/api/issues/matrix":
+            matrix_path = self.server.repo_root / "dev" / "issues" / "issues.csv"
+            if not matrix_path.exists():
+                self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+                return
+            with matrix_path.open("r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+            if not rows:
+                self._send_json([], HTTPStatus.OK)
+                return
+            header = rows[0]
+            sub = rows[1] if len(rows) > 1 else []
+            desc = rows[2] if len(rows) > 2 else []
+            examples = rows[3] if len(rows) > 3 else []
+            col_indices = []
+            current_col = ""
+            col_start = None
+            for i, h in enumerate(header):
+                h_stripped = h.strip()
+                if h_stripped:
+                    if col_start is not None:
+                        col_indices.append((current_col, col_start, i))
+                    current_col = h_stripped
+                    col_start = i
+            if col_start is not None:
+                col_indices.append((current_col, col_start, len(header)))
+            matrix = []
+            for col_name, start, end in col_indices:
+                types = []
+                for i in range(start, end):
+                    if i < len(sub) and sub[i].strip():
+                        type_name = sub[i].strip()
+                        types.append({
+                            "name": type_name,
+                            "description": desc[i].strip() if i < len(desc) else "",
+                            "example": examples[i].strip() if i < len(examples) else "",
+                        })
+                matrix.append({"column": col_name, "types": types})
+            self._send_json(matrix)
+            return
+
+        if parsed.path == "/api/issues/details":
+            details_path = self.server.repo_root / "dev" / "issues" / "issues.json"
+            if not details_path.exists():
+                self._send_json([], HTTPStatus.OK)
+                return
+            details = json.loads(details_path.read_text(encoding="utf-8"))
+            self._send_json(details)
             return
 
         static_path = self.server.static_root / parsed.path.lstrip("/")

@@ -66,12 +66,53 @@
       </div>
 
       <div class="tab-pane" data-pane="exception">
-        <section class="card tab-placeholder-card">
-          <div class="placeholder-content">
-            <h1>异常场景</h1>
-            <p class="card-note">异常场景管理功能开发中...</p>
+        <div class="exc-layout">
+          <aside class="exc-sidebar">
+            <div class="exc-sidebar-header">
+              <span class="exc-sidebar-title">APP 场景分类</span>
+              <span class="exc-badge" id="exc-badge">0</span>
+            </div>
+            <div class="exc-search-box">
+              <input type="text" id="exc-search" placeholder="搜索APP或流程..." />
+            </div>
+            <div class="exc-tree-wrap" id="exc-tree-wrap">
+              <ul class="exc-tree" id="exc-tree"></ul>
+            </div>
+          </aside>
+          <div class="exc-content">
+            <div class="exc-matrix" id="exc-matrix"></div>
+            <div class="exc-filter" id="exc-filter">
+              <div class="exc-filter-row">
+                <select id="exc-f-app"><option value="">所有 APP</option></select>
+                <select id="exc-f-flow"><option value="">所有流程</option></select>
+                <select id="exc-f-col"><option value="">所有故障域</option></select>
+                <select id="exc-f-pri"><option value="">所有优先级</option></select>
+              </div>
+              <div class="exc-filter-info">
+                <span>共 <b id="exc-total">0</b> 条</span>
+                <span class="exc-filter-divider">|</span>
+                <span>筛选 <b id="exc-showing">0</b> 条</span>
+              </div>
+            </div>
+            <div class="exc-table-wrap">
+              <table class="exc-table" id="exc-table">
+                <thead>
+                  <tr>
+                    <th data-sort="priority" class="exc-th exc-th-pri">优先级<span class="exc-sort-icon"></span></th>
+                    <th data-sort="app" class="exc-th">APP<span class="exc-sort-icon"></span></th>
+                    <th data-sort="flow" class="exc-th">流程<span class="exc-sort-icon"></span></th>
+                    <th data-sort="exception_column" class="exc-th">故障域<span class="exc-sort-icon"></span></th>
+                    <th data-sort="exception_type" class="exc-th">故障类型<span class="exc-sort-icon"></span></th>
+                    <th data-sort="exception_category" class="exc-th">故障分类<span class="exc-sort-icon"></span></th>
+                    <th data-sort="exception_description" class="exc-th">故障描述<span class="exc-sort-icon"></span></th>
+                  </tr>
+                </thead>
+                <tbody id="exc-tbody"></tbody>
+              </table>
+            </div>
+            <div class="exc-pagination" id="exc-pagination"></div>
           </div>
-        </section>
+        </div>
       </div>
 
       <div class="tab-pane" data-pane="sim-build">
