@@ -1305,6 +1305,7 @@ const excState = {
   filterPri: '',
   treeFilter: '',
   treeOpen: {},
+  filterCategory: '',
 };
 
 const excCache = { loaded: false };
@@ -1443,20 +1444,29 @@ function excBuildMatrix() {
     html += '<span style="font-size:11px;color:var(--muted)">' + col.types.length + ' 种故障类型</span>';
     html += '<div class="exc-matrix-card-cols">';
     col.types.forEach(t => {
-      html += '<span class="exc-matrix-chip">' + t.name + '</span>';
+      const chipActive = excState.filterCategory === t.name;
+      html += '<span class="exc-matrix-chip' + (chipActive ? ' is-active' : '') + '" data-category="' + t.name + '">' + t.name + '</span>';
     });
     html += '</div></div>';
   });
   container.innerHTML = html;
 
   container.querySelectorAll('.exc-matrix-card').forEach(card => {
-    card.addEventListener('click', () => {
+    card.addEventListener('click', (e) => {
+      // Ignore if clicking a chip inside the card
+      if (e.target.closest('.exc-matrix-chip')) return;
       const col = card.dataset.col;
-      if (excState.filterCol === col) {
-        excState.filterCol = '';
-      } else {
-        excState.filterCol = col;
-      }
+      excState.filterCol = excState.filterCol === col ? '' : col;
+      excBuildMatrix();
+      excApplyFilters();
+    });
+  });
+
+  container.querySelectorAll('.exc-matrix-chip').forEach(chip => {
+    chip.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const cat = chip.dataset.category;
+      excState.filterCategory = excState.filterCategory === cat ? '' : cat;
       excBuildMatrix();
       excApplyFilters();
     });
@@ -1507,6 +1517,11 @@ function excApplyFilters() {
   // Filter by fault column
   if (excState.filterCol) {
     data = data.filter(d => d.exception_column === excState.filterCol);
+  }
+
+  // Filter by fault category (from matrix chip click)
+  if (excState.filterCategory) {
+    data = data.filter(d => d.exception_category === excState.filterCategory);
   }
 
   // Filter by priority

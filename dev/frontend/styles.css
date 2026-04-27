@@ -1626,7 +1626,19 @@ p {
   color: var(--muted);
   border: 1px solid rgba(159, 176, 192, 0.3);
   font-weight: 600;
-  transition: background 0.1s ease;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.exc-matrix-chip:hover {
+  background: rgba(15, 78, 201, 0.08);
+  border-color: rgba(15, 78, 201, 0.2);
+  color: var(--text);
+}
+.exc-matrix-chip.is-active {
+  background: rgba(15, 78, 201, 0.12);
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+  font-weight: 700;
 }
 
 /* Filter bar */
