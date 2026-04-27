@@ -1543,8 +1543,10 @@ function excSortData(data) {
     let va = key === 'priority' ? (a._priority || 'P9') : (a[key] || '');
     let vb = key === 'priority' ? (b._priority || 'P9') : (b[key] || '');
     if (key === 'priority') {
-      const numA = parseInt(va.slice(1)) || 99;
-      const numB = parseInt(vb.slice(1)) || 99;
+      const nA = parseInt(va.slice(1), 10);
+      const nB = parseInt(vb.slice(1), 10);
+      const numA = isNaN(nA) ? 99 : nA;
+      const numB = isNaN(nB) ? 99 : nB;
       return excState.sortAsc ? numA - numB : numB - numA;
     }
     va = String(va).toLowerCase();
