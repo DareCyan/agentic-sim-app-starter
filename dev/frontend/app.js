@@ -1328,18 +1328,36 @@ async function excLoadAll() {
       return { ...d, _priority: p.priority, _desc: p.desc };
     });
     excCache.loaded = true;
-    excBuild();
+    try {
+      excBuild();
+    } catch (e) {
+      console.error('excBuild error:', e);
+      document.getElementById('exc-matrix').innerHTML =
+        '<div class="exc-loading">构建界面失败: ' + e.message + ' @ ' + (e.stack || '').split('\n')[1]?.trim() + '</div>';
+      return;
+    }
   } catch (e) {
+    console.error('excLoadAll error:', e);
     document.getElementById('exc-matrix').innerHTML =
       '<div class="exc-loading">加载失败: ' + e.message + '</div>';
   }
 }
 
 function excBuild() {
-  excBuildTree();
-  excBuildMatrix();
-  excBuildFilterDropdowns();
-  excApplyFilters();
+  const fns = [
+    ['excBuildTree', excBuildTree],
+    ['excBuildMatrix', excBuildMatrix],
+    ['excBuildFilterDropdowns', excBuildFilterDropdowns],
+    ['excApplyFilters', excApplyFilters],
+  ];
+  for (const [name, fn] of fns) {
+    try { fn(); } catch (e) {
+      console.error(name + ' failed:', e);
+      const el = document.getElementById('exc-matrix');
+      if (el) el.innerHTML = '<div class="exc-loading">[' + name + '] ' + e.message + '</div>';
+      throw e;
+    }
+  }
 }
 
 function excBuildTree() {
