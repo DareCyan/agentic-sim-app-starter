@@ -1435,7 +1435,7 @@ function excBuildMatrix() {
   const colColors = ['#0f4ec9', '#0d8a72', '#7b5ea0'];
   let html = '';
   excState.matrix.forEach((col, i) => {
-    const isActive = !excState.filterCol || excState.filterCol === col.column;
+    const isActive = excState.filterCol === col.column;
     html += '<div class="exc-matrix-card' +
       (isActive ? ' is-active' : '') +
       ' exc-matrix-card-col' + i + '" data-col="' + col.column + '">';
@@ -1698,7 +1698,7 @@ document.getElementById('exc-tree').addEventListener('click', (e) => {
       excState.filterApp = cat;
       excState.filterFlow = flow;
     }
-    // Update filter dropdowns
+    excBuildTree();
     document.getElementById('exc-f-app').value = excState.filterApp;
     excBuildFilterDropdowns();
     excApplyFilters();

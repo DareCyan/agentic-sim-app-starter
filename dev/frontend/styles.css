@@ -1589,14 +1589,16 @@ p {
 
 .exc-matrix-card.is-active {
   border-left: 3px solid;
+  background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.7)), var(--panel);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
 }
 
 .exc-matrix-card-col0 { border-left: 3px solid transparent; }
 .exc-matrix-card-col1 { border-left: 3px solid transparent; }
 .exc-matrix-card-col2 { border-left: 3px solid transparent; }
-.exc-matrix-card.is-active.exc-matrix-card-col0 { border-left-color: #0f4ec9; }
-.exc-matrix-card.is-active.exc-matrix-card-col1 { border-left-color: #0d8a72; }
-.exc-matrix-card.is-active.exc-matrix-card-col2 { border-left-color: #7b5ea0; }
+.exc-matrix-card.is-active.exc-matrix-card-col0 { border-left-color: #0f4ec9; background: linear-gradient(135deg, rgba(15,78,201,0.06), rgba(255,255,255,0.7)); }
+.exc-matrix-card.is-active.exc-matrix-card-col1 { border-left-color: #0d8a72; background: linear-gradient(135deg, rgba(13,138,114,0.06), rgba(255,255,255,0.7)); }
+.exc-matrix-card.is-active.exc-matrix-card-col2 { border-left-color: #7b5ea0; background: linear-gradient(135deg, rgba(123,94,160,0.06), rgba(255,255,255,0.7)); }
 
 .exc-matrix-card-title {
   font-size: 13px;
