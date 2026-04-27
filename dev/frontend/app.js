@@ -1304,6 +1304,7 @@ const excState = {
   filterCol: '',
   filterPri: '',
   treeFilter: '',
+  treeOpen: {},
 };
 
 const excCache = { loaded: false };
