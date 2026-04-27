@@ -83,6 +83,57 @@ body {
   margin-left: -1px;
 }
 
+/* Language toggle */
+.lang-toggle {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  padding: 0 12px;
+  gap: 0;
+}
+
+.lang-btn {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  min-width: 28px;
+  cursor: pointer;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  color: var(--muted);
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  text-align: center;
+}
+
+.lang-btn:first-child {
+  border-radius: 10px 0 0 10px;
+  padding-left: 10px;
+}
+
+.lang-btn:last-child {
+  border-radius: 0 10px 10px 0;
+  padding-right: 10px;
+  margin-left: -1px;
+}
+
+.lang-btn.is-active {
+  background: var(--accent-2);
+  color: #fff;
+  border-color: var(--accent-2);
+  font-weight: 700;
+  z-index: 1;
+  position: relative;
+  box-shadow: 0 1px 4px rgba(15, 78, 201, 0.3);
+}
+
+.lang-btn:not(.is-active):hover {
+  color: var(--accent-2);
+  border-color: var(--accent-2);
+}
+
 /* Tab panes */
 .tab-pane {
   display: none;
@@ -1563,7 +1614,7 @@ p {
 .exc-content {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -1693,10 +1744,19 @@ p {
 
 /* Table */
 .exc-table-wrap {
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   border: 1px solid var(--panel-border);
   box-shadow: var(--shadow);
   background: var(--panel);
+}
+
+.exc-table-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .exc-table {
@@ -1800,7 +1860,10 @@ p {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 8px 0;
+  padding: 8px 12px;
+  flex-shrink: 0;
+  border-top: 1px solid var(--panel-border);
+  background: linear-gradient(180deg, rgba(255,255,255,0.6), rgba(245,248,251,0.6));
 }
 
 .exc-page-btn {
@@ -1879,4 +1942,114 @@ p {
 /* Override tab-pane for exception layout */
 .tab-pane.is-active[data-pane="exception"] {
   grid-template-rows: 1fr;
+}
+
+/* ===== Questions Modal ===== */
+.exc-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.exc-modal-overlay.is-hidden {
+  display: none;
+}
+.exc-modal-box {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: min(640px, 90vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+.exc-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.exc-modal-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 0 4px;
+  line-height: 1;
+}
+.exc-modal-close:hover {
+  color: var(--fg);
+}
+.exc-modal-body {
+  padding: 14px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.exc-q-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.exc-q-text {
+  flex: 1;
+  word-break: break-word;
+}
+.exc-q-copy {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  line-height: 1.6;
+  color: var(--muted);
+  transition: all 0.15s;
+}
+.exc-q-copy:hover {
+  background: var(--accent-2);
+  color: #fff;
+  border-color: var(--accent-2);
+}
+.exc-q-copy.is-copied {
+  background: var(--green, #2e7d32);
+  color: #fff;
+  border-color: var(--green, #2e7d32);
+}
+
+/* Questions button in table */
+.exc-q-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  line-height: 1;
+  transition: all 0.15s;
+}
+.exc-q-btn:hover {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+}
+.exc-td-action {
+  text-align: center;
+  white-space: nowrap;
 }
