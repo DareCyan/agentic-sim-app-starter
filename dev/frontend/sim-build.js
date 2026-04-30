@@ -75,12 +75,12 @@ function simBuildRefresh() {
       simBuild.step = data.step ?? -1;
       simBuild.logs = data.logs || [];
       simBuildRender();
-      // Start screen polling when running starts
-      if (simBuild.state === 'running' && prevState !== 'running') {
+      // Start screen polling when running (handles tab switch + state transition)
+      if (simBuild.state === 'running' && !simBuild.screenTimer) {
         simScreenPollStart();
       }
       // Stop screen polling when done/error
-      if ((simBuild.state === 'done' || simBuild.state === 'error') && prevState === 'running') {
+      if ((simBuild.state === 'done' || simBuild.state === 'error') && simBuild.screenTimer) {
         // Keep showing last frame, don't stop immediately
         setTimeout(() => simScreenPollStop(), 2000);
       }

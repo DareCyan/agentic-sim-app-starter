@@ -14,6 +14,7 @@ function switchTab(tabName) {
   }
   if (tabName === "sim-build") {
     simBuildRefresh();
+    if (simBuild.state === 'running') simBuildPollStart();
   }
   document.querySelectorAll(".tab").forEach((t) => t.classList.remove("is-active"));
   document.querySelectorAll(".tab-pane").forEach((p) => p.classList.remove("is-active"));
