@@ -4,6 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Pipeline Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -70,63 +73,65 @@
       </div>
 
       <div class="tab-pane" data-pane="exception">
-        <div class="exc-layout">
-          <aside class="exc-sidebar">
-            <div class="exc-sidebar-header">
-              <span class="exc-sidebar-title" data-i18n="exc.sidebar-title">APP 场景分类</span>
-              <span class="exc-badge" id="exc-badge">0</span>
-            </div>
-            <div class="exc-search-box">
-              <input type="text" id="exc-search" data-i18n-placeholder="exc.search-placeholder" placeholder="搜索APP或流程..." />
-            </div>
-            <div class="exc-tree-wrap" id="exc-tree-wrap">
-              <ul class="exc-tree" id="exc-tree"></ul>
-            </div>
-          </aside>
-          <div class="exc-content">
-            <div class="exc-matrix" id="exc-matrix"></div>
-            <div class="exc-filter" id="exc-filter">
-              <div class="exc-filter-row">
-                <select id="exc-f-app"><option value="">所有 APP</option></select>
-                <select id="exc-f-flow"><option value="">所有流程</option></select>
-                <select id="exc-f-col"><option value="">所有故障域</option></select>
-                <select id="exc-f-pri"><option value="">所有优先级</option></select>
-              </div>
-              <div class="exc-filter-info">
-                <span><span data-i18n="exc.total">共</span> <b id="exc-total">0</b> <span data-i18n="exc.items">条</span></span>
-                <span class="exc-filter-divider">|</span>
-                <span><span data-i18n="exc.filtered">筛选</span> <b id="exc-showing">0</b> <span data-i18n="exc.items">条</span></span>
-              </div>
-            </div>
-            <div class="exc-table-wrap">
-              <div class="exc-table-scroll">
-                <table class="exc-table" id="exc-table">
-                  <thead>
-                    <tr>
-                      <th data-sort="priority" class="exc-th exc-th-pri" data-i18n="exc.th-priority">优先级<span class="exc-sort-icon"></span></th>
-                      <th data-sort="exception_description" class="exc-th" data-i18n="exc.th-desc">故障描述<span class="exc-sort-icon"></span></th>
-                      <th data-sort="app" class="exc-th" data-i18n="exc.th-app">APP<span class="exc-sort-icon"></span></th>
-                      <th data-sort="flow" class="exc-th" data-i18n="exc.th-flow">流程<span class="exc-sort-icon"></span></th>
-                      <th data-sort="exception_column" class="exc-th" data-i18n="exc.th-col">故障域<span class="exc-sort-icon"></span></th>
-                      <th data-sort="exception_type" class="exc-th" data-i18n="exc.th-type">故障类型<span class="exc-sort-icon"></span></th>
-                      <th data-sort="exception_category" class="exc-th" data-i18n="exc.th-category">故障分类<span class="exc-sort-icon"></span></th>
-                      <th class="exc-th exc-th-action" data-i18n="exc.th-actions">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody id="exc-tbody"></tbody>
-                </table>
-              </div>
-              <div class="exc-pagination" id="exc-pagination"></div>
-            </div>
+        <div class="exc-content">
+          <!-- Stats bar -->
+          <div class="exc-stats" id="exc-stats"></div>
+          <!-- Matrix cross-table -->
+          <div class="exc-matrix-wrap" id="exc-matrix-wrap">
+            <div class="exc-matrix-loading" id="exc-matrix-loading">加载中...</div>
           </div>
         </div>
       </div>
 
       <div class="tab-pane" data-pane="sim-build">
-        <section class="card tab-placeholder-card">
-          <div class="placeholder-content">
-            <h1>仿真APP构建</h1>
-            <p class="card-note">仿真 APP 构建管理功能开发中...</p>
+        <section class="sim-build-layout">
+          <div class="sim-build-topbar">
+            <h2 data-i18n="sim.title">图片仿真APP</h2>
+            <span class="card-note" data-i18n="sim.subtitle">安装 HAP 应用并传输文件到设备</span>
+          </div>
+
+          <div class="sim-build-controls">
+            <div class="sim-input-group">
+              <label for="sim-device-id" data-i18n="sim.device-id">设备标识</label>
+              <input type="text" id="sim-device-id" placeholder="如 192.168.1.100:5555" data-i18n-placeholder="sim.device-placeholder" />
+            </div>
+            <button id="sim-run-btn" class="sim-btn sim-btn-accent" data-i18n="sim.run">▶ 执行</button>
+            <span id="sim-state-badge" class="sim-state-badge"></span>
+          </div>
+
+          <div class="sim-steps" id="sim-steps">
+            <div class="sim-step" data-step="0"><span class="sim-step-num">1</span><span class="sim-step-label" data-i18n="sim.step-hdc">检查 HDC</span></div>
+            <div class="sim-step" data-step="1"><span class="sim-step-num">2</span><span class="sim-step-label" data-i18n="sim.step-connect">连接设备</span></div>
+            <div class="sim-step" data-step="2"><span class="sim-step-num">3</span><span class="sim-step-label" data-i18n="sim.step-uninstall">卸载旧应用</span></div>
+            <div class="sim-step" data-step="3"><span class="sim-step-num">4</span><span class="sim-step-label" data-i18n="sim.step-install">安装 HAP</span></div>
+            <div class="sim-step" data-step="4"><span class="sim-step-num">5</span><span class="sim-step-label" data-i18n="sim.step-start">启动应用</span></div>
+            <div class="sim-step" data-step="5"><span class="sim-step-num">6</span><span class="sim-step-label" data-i18n="sim.step-send">传输文件</span></div>
+            <div class="sim-step" data-step="6"><span class="sim-step-num">7</span><span class="sim-step-label" data-i18n="sim.step-stop">关闭应用</span></div>
+          </div>
+
+          <div class="sim-bottom-area">
+            <div class="sim-screen-panel">
+              <div class="sim-screen-header">
+                <span data-i18n="sim.screen-title">设备屏幕</span>
+                <div class="sim-key-bar">
+                  <button class="sim-key-btn" data-key="BACK" data-i18n-title="sim.key-back" title="返回">◀</button>
+                  <button class="sim-key-btn" data-key="HOME" data-i18n-title="sim.key-home" title="主页">⬤</button>
+                  <button class="sim-key-btn" data-key="RECENT" data-i18n-title="sim.key-recent" title="最近任务">□</button>
+                </div>
+              </div>
+              <div class="sim-screen-viewport" id="sim-screen-viewport">
+                <img id="sim-screen-img" class="sim-screen-img" alt="" />
+                <canvas id="sim-screen-canvas" class="sim-screen-canvas"></canvas>
+                <div class="sim-screen-placeholder" id="sim-screen-placeholder" data-i18n="sim.screen-placeholder">等待连接设备...</div>
+              </div>
+            </div>
+
+            <div class="sim-log-area">
+              <div class="sim-log-header">
+                <span data-i18n="sim.log-title">执行日志</span>
+              </div>
+              <pre id="sim-log" class="sim-log" data-i18n="sim.log-empty">等待执行...</pre>
+            </div>
           </div>
         </section>
       </div>
@@ -298,7 +303,7 @@
     <div id="exc-modal" class="exc-modal-overlay is-hidden">
       <div class="exc-modal-box">
         <div class="exc-modal-header">
-          <span data-i18n="exc.modal-title">示例场景</span>
+          <span id="exc-modal-title-text" data-i18n="exc.modal-title">示例场景</span>
           <button id="exc-modal-close" class="exc-modal-close">&times;</button>
         </div>
         <div class="exc-modal-body" id="exc-modal-body"></div>
@@ -309,6 +314,7 @@
     <script src="/pipeline-core.js"></script>
     <script src="/workflow.js"></script>
     <script src="/exception.js"></script>
+    <script src="/sim-build.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

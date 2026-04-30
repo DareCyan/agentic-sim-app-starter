@@ -91,7 +91,7 @@ function wfApplySuggestion() {
 }
 
 // Real pipeline integration
-const WF_REAL_SUBTASK_MAP = {
+const WF_PIPELINE_SUBTASK_MAP = {
   '任务初始化': ['参数校验', '环境检测'],
   '仿真基线准备': ['基线同步', '依赖安装', '配置检查'],
   'Agent 运行时': ['Agent连接', '任务分配', '结果汇聚'],
@@ -100,13 +100,33 @@ const WF_REAL_SUBTASK_MAP = {
   '完成': ['资源清理'],
 };
 
-const WF_REAL_STEPS = [
+const WF_PIPELINE_STEPS = [
   { id: 'init', name: '任务初始化' },
   { id: 'prepare', name: '仿真基线准备' },
   { id: 'agent', name: 'Agent 运行时' },
   { id: 'inspect', name: '状态巡检' },
   { id: 'output', name: '结果输出' },
   { id: 'done', name: '完成' },
+];
+
+const WF_SIMBUILD_SUBTASK_MAP = {
+  '检查 HDC': ['版本检测', '命令可用性'],
+  '连接设备': ['设备发现', '连接建立'],
+  '卸载旧应用': ['包名查询', '卸载清理'],
+  '安装 HAP': ['文件校验', '安装部署'],
+  '启动应用': ['Ability 启动', '等待就绪'],
+  '传输文件': ['文件打包', '设备传输'],
+  '关闭应用': ['进程终止', '资源释放'],
+};
+
+const WF_SIMBUILD_STEPS = [
+  { id: 'hdc', name: '检查 HDC' },
+  { id: 'connect', name: '连接设备' },
+  { id: 'uninstall', name: '卸载旧应用' },
+  { id: 'install', name: '安装 HAP' },
+  { id: 'start', name: '启动应用' },
+  { id: 'send', name: '传输文件' },
+  { id: 'stop', name: '关闭应用' },
 ];
 
 let wfRealTimer = null;
@@ -148,13 +168,16 @@ async function wfOpenReal(wf) {
   wfCanvas.contentGroup = null;
 
   // Default tasks before first fetch
-  wf.tasks = WF_REAL_STEPS.map((s) => {
-    const subNames = WF_REAL_SUBTASK_MAP[s.name] || [];
+  const isSimBuild = wf.source === 'sim-build';
+  const realSteps = isSimBuild ? WF_SIMBUILD_STEPS : WF_PIPELINE_STEPS;
+  const subtaskMap = isSimBuild ? WF_SIMBUILD_SUBTASK_MAP : WF_PIPELINE_SUBTASK_MAP;
+  wf.tasks = realSteps.map((s) => {
+    const subNames = subtaskMap[s.name] || [];
     return { id: s.id, name: s.name, type: 'task', status: 'idle', subtasks: subNames.map((n) => ({ name: n })) };
   });
   wf.edges = [];
-  for (let i = 0; i < WF_REAL_STEPS.length - 1; i++) {
-    wf.edges.push({ from: WF_REAL_STEPS[i].id, to: WF_REAL_STEPS[i + 1].id });
+  for (let i = 0; i < realSteps.length - 1; i++) {
+    wf.edges.push({ from: realSteps[i].id, to: realSteps[i + 1].id });
   }
   wfRenderFlow(wf);
 
@@ -167,48 +190,10 @@ async function wfOpenReal(wf) {
 
 async function wfRefreshReal(wf) {
   try {
-    const task = await wfFetchJSON('/api/pipelines/current?pipeline=baseApp');
-    const progress = task.progress || {};
-    const currentStep = progress.currentStep || 1;
-    const steps = progress.steps || WF_REAL_STEPS.map((s) => s.name);
-    const terminalStatuses = ['completed', 'pushed', 'cancelled', 'build_failed', 'agent_exited_without_result', 'dry_run_success_detected'];
-    const isTerminal = terminalStatuses.includes(task.status);
-    const isFailed = ['build_failed', 'cancelled', 'agent_exited_without_result'].includes(task.status);
-
-    wf.tasks = steps.map((name, i) => {
-      let status = 'idle';
-      const stepNum = i + 1;
-      if (stepNum < currentStep) status = 'completed';
-      else if (stepNum === currentStep) {
-        if (isTerminal || task.status === 'ready') status = 'completed';
-        else if (isFailed) status = 'failed';
-        else status = 'running';
-      }
-      return {
-        id: 'step' + i, name, type: 'task', status,
-        subtasks: (WF_REAL_SUBTASK_MAP[name] || []).map((n) => ({ name: n })),
-      };
-    });
-
-    wf.edges = [];
-    for (let i = 0; i < wf.tasks.length - 1; i++) {
-      wf.edges.push({ from: 'step' + i, to: 'step' + (i + 1) });
-    }
-
-    wfRenderFlow(wf);
-
-    wfEls.detailDesc.textContent = '状态: ' + task.status + ' · ' + (progress.label || '');
-    wfEls.terminalStatus.textContent = progress.label || task.status || '-';
-
-    const agentRunning = task.agent && task.agent.running;
-    if (agentRunning) {
-      wfState.sessionActive = true;
-      wfEls.runBtn.textContent = '■ 停止';
-      wfEls.runBtn.classList.add('wf-btn-stop');
+    if (wf.source === 'sim-build') {
+      await wfRefreshSimBuild(wf);
     } else {
-      wfState.sessionActive = false;
-      wfEls.runBtn.textContent = '▶ 运行';
-      wfEls.runBtn.classList.remove('wf-btn-stop');
+      await wfRefreshPipeline(wf);
     }
   } catch (e) {
     if (wfEls.terminalBody) {
@@ -217,7 +202,108 @@ async function wfRefreshReal(wf) {
   }
 }
 
+async function wfRefreshPipeline(wf) {
+  const task = await wfFetchJSON('/api/pipelines/current?pipeline=baseApp');
+  const progress = task.progress || {};
+  const currentStep = progress.currentStep || 1;
+  const steps = progress.steps || WF_PIPELINE_STEPS.map((s) => s.name);
+  const terminalStatuses = ['completed', 'pushed', 'cancelled', 'build_failed', 'agent_exited_without_result', 'dry_run_success_detected'];
+  const isTerminal = terminalStatuses.includes(task.status);
+  const isFailed = ['build_failed', 'cancelled', 'agent_exited_without_result'].includes(task.status);
+
+  wf.tasks = steps.map((name, i) => {
+    let status = 'idle';
+    const stepNum = i + 1;
+    if (stepNum < currentStep) status = 'completed';
+    else if (stepNum === currentStep) {
+      if (isTerminal || task.status === 'ready') status = 'completed';
+      else if (isFailed) status = 'failed';
+      else status = 'running';
+    }
+    return {
+      id: 'step' + i, name, type: 'task', status,
+      subtasks: (WF_PIPELINE_SUBTASK_MAP[name] || []).map((n) => ({ name: n })),
+    };
+  });
+
+  wf.edges = [];
+  for (let i = 0; i < wf.tasks.length - 1; i++) {
+    wf.edges.push({ from: 'step' + i, to: 'step' + (i + 1) });
+  }
+
+  wfRenderFlow(wf);
+  wfEls.detailDesc.textContent = '状态: ' + task.status + ' · ' + (progress.label || '');
+  wfEls.terminalStatus.textContent = progress.label || task.status || '-';
+
+  const agentRunning = task.agent && task.agent.running;
+  if (agentRunning) {
+    wfState.sessionActive = true;
+    wfEls.runBtn.textContent = '■ 停止';
+    wfEls.runBtn.classList.add('wf-btn-stop');
+  } else {
+    wfState.sessionActive = false;
+    wfEls.runBtn.textContent = '▶ 运行';
+    wfEls.runBtn.classList.remove('wf-btn-stop');
+  }
+}
+
+async function wfRefreshSimBuild(wf) {
+  const data = await wfFetchJSON('/api/sim-build/status');
+  const state = data.state || 'idle';
+  const step = data.step ?? -1;
+  const steps = WF_SIMBUILD_STEPS;
+
+  wf.tasks = steps.map((s, i) => {
+    let status = 'idle';
+    if (state === 'done') {
+      status = 'completed';
+    } else if (state === 'error') {
+      if (i < step) status = 'completed';
+      else if (i === step) status = 'failed';
+    } else if (state === 'running') {
+      if (i < step) status = 'completed';
+      else if (i === step) status = 'running';
+    }
+    return {
+      id: s.id, name: s.name, type: 'task', status,
+      subtasks: (WF_SIMBUILD_SUBTASK_MAP[s.name] || []).map((n) => ({ name: n })),
+    };
+  });
+
+  wf.edges = steps.slice(0, -1).map((s, i) => ({ from: s.id, to: steps[i + 1].id }));
+
+  wfRenderFlow(wf);
+
+  const stateLabels = { idle: '待命', running: '执行中', done: '已完成', error: '出错' };
+  wfEls.detailDesc.textContent = '状态: ' + (stateLabels[state] || state);
+  wfEls.terminalStatus.textContent = stateLabels[state] || state || '-';
+
+  if (state === 'running') {
+    wfState.sessionActive = true;
+    wfEls.runBtn.textContent = '■ 停止';
+    wfEls.runBtn.classList.add('wf-btn-stop');
+  } else {
+    wfState.sessionActive = false;
+    wfEls.runBtn.textContent = '▶ 运行';
+    wfEls.runBtn.classList.remove('wf-btn-stop');
+  }
+
+  // Print new log lines to terminal
+  if (data.logs && data.logs.length > 0) {
+    const lastLine = data.logs[data.logs.length - 1];
+    // Only print if it's a new line
+    if (lastLine !== wf._lastLogLine) {
+      wf._lastLogLine = lastLine;
+      wfTerminalWriteln(`[${wfTerminalTimestamp()}] ${lastLine}`, 'wf-terminal-muted');
+    }
+  }
+}
+
 async function wfStopRealRun(wf) {
+  if (wf.source === 'sim-build') {
+    wfTerminalWriteln(`[${wfTerminalTimestamp()}] 图片仿真流程无法中途终止，请等待完成`, 'wf-terminal-muted');
+    return;
+  }
   wfTerminalWriteln(`[${wfTerminalTimestamp()}] 发送终止请求...`, 'wf-terminal-muted');
   try {
     const res = await fetch('/api/pipelines/current/terminate?pipeline=baseApp', { method: 'POST', cache: 'no-store' });
@@ -235,6 +321,37 @@ async function wfStopRealRun(wf) {
   wfEls.runBtn.classList.remove('wf-btn-stop');
 }
 
+async function wfStartSimBuildRun(wf) {
+  // Get device ID from the sim-build tab input, or prompt
+  let deviceId = document.getElementById('sim-device-id')?.value?.trim();
+  if (!deviceId) {
+    deviceId = prompt('请输入设备标识 (如 192.168.1.100:5555):');
+    if (!deviceId) return;
+    // Sync to sim-build tab input
+    const input = document.getElementById('sim-device-id');
+    if (input) input.value = deviceId;
+  }
+
+  wfTerminalWriteln(`[${wfTerminalTimestamp()}] 启动图片仿真流程: ${deviceId}`, 'wf-terminal-muted');
+  try {
+    const res = await fetch('/api/sim-build/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: deviceId }),
+      cache: 'no-store',
+    });
+    const data = await res.json();
+    if (data.ok) {
+      wfTerminalWriteln(`[${wfTerminalTimestamp()}] ✓ 流程已启动`, 'wf-terminal-success');
+      wf._lastLogLine = null;
+    } else {
+      wfTerminalWriteln(`[${wfTerminalTimestamp()}] ✗ 启动失败: ${data.message || '未知错误'}`, 'wf-terminal-error');
+    }
+  } catch (e) {
+    wfTerminalWriteln(`[${wfTerminalTimestamp()}] ✗ 请求失败: ${e.message}`, 'wf-terminal-error');
+  }
+}
+
 async function wfFetchJSON(url, options) {
   const res = await fetch(url, { cache: 'no-store', ...options });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -247,24 +364,21 @@ function initWorkflows() {
     {
       id: 'img-sim',
       name: '图片仿真APP',
-      description: '加载图片 → 图片预处理 → 仿真渲染 → 输出结果',
-      tasks: [
-        { id: 'load', name: '加载图片', type: 'task' },
-        { id: 'preprocess', name: '图片预处理', type: 'task' },
-        { id: 'render', name: '仿真渲染', type: 'branch', branches: ['标准渲染', '高质量渲染', '快速预览'] },
-        { id: 'output', name: '输出结果', type: 'task' },
-      ],
-      edges: [
-        { from: 'load', to: 'preprocess' },
-        { from: 'preprocess', to: 'render' },
-        { from: 'render', to: 'output' },
-      ],
+      description: '检查 HDC → 连接设备 → 安装 HAP → 传输文件',
+      real: true,
+      source: 'sim-build',
+      tasks: WF_SIMBUILD_STEPS.map((s) => ({
+        id: s.id, name: s.name, type: 'task',
+        subtasks: (WF_SIMBUILD_SUBTASK_MAP[s.name] || []).map((n) => ({ name: n })),
+      })),
+      edges: WF_SIMBUILD_STEPS.slice(0, -1).map((s, i) => ({ from: s.id, to: WF_SIMBUILD_STEPS[i + 1].id })),
     },
     {
       id: 'code-sim',
       name: '代码仿真APP',
       description: '连接后端流水线，实时监控构建状态',
       real: true,
+      source: 'pipeline',
       tasks: [
         { id: 'init', name: '任务初始化', type: 'task' },
         { id: 'prepare', name: '仿真基线准备', type: 'task' },
@@ -366,17 +480,19 @@ function wfRenderFlow(wf) {
   const tasks = wf.tasks;
   if (!tasks.length) return;
 
-  const nodeW = 190;
-  // Compute node height — extra room for subtask chips if any
-  let maxSubRows = 0;
-  tasks.forEach(t => {
-    if (t.subtasks && t.subtasks.length > 0) {
-      const rows = Math.ceil(t.subtasks.length / 3);
-      if (rows > maxSubRows) maxSubRows = rows;
-    }
-  });
-  const nodeH = maxSubRows > 0 ? 120 : 68;
+  const nodeW = 240;
   const headerH = 26;
+  const cardH = 36;
+  const cardGap = 2;
+  const statusLineH = 18;  // space for status text below header
+  const sectionLabelH = 16;  // space for "子任务" label
+  // Compute node height dynamically based on subtask count (1 per row)
+  let maxSubtasks = 0;
+  tasks.forEach(t => {
+    if (t.subtasks && t.subtasks.length > maxSubtasks) maxSubtasks = t.subtasks.length;
+  });
+  const subCardsH = maxSubtasks > 0 ? maxSubtasks * (cardH + cardGap) : 0;
+  const nodeH = maxSubtasks > 0 ? headerH + statusLineH + sectionLabelH + subCardsH + 16 : 68;
   const gapX = 130;
   const padX = 60;
   const padY = Math.max(40, (svgH - nodeH) / 2);
@@ -533,7 +649,7 @@ function wfRenderFlow(wf) {
     const hasSubtasks = task.subtasks && task.subtasks.length > 0;
     const statText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     statText.setAttribute('x', x + 12);
-    statText.setAttribute('y', hasSubtasks ? y + headerH + 14 : y + headerH + (nodeH - headerH) / 2);
+    statText.setAttribute('y', hasSubtasks ? y + headerH + statusLineH / 2 + 1 : y + headerH + (nodeH - headerH) / 2);
     statText.setAttribute('class', 'wf-flow-node-status');
     statText.setAttribute('dominant-baseline', 'central');
     statText.textContent = statusLabels[task.status] || task.status;
@@ -543,41 +659,83 @@ function wfRenderFlow(wf) {
     else if (task.status === 'waiting') statText.setAttribute('fill', '#b878d0');
     g.appendChild(statText);
 
-    // Subtask cards
+    // Subtask detail cards (1 per row, full width)
     if (hasSubtasks) {
-      const cardW = 56; const cardH = 24; const cardGap = 6;
-      const cardsPerRow = Math.max(1, Math.floor((nodeW - 16) / (cardW + cardGap)));
-      const cardStartX = x + 8;
-      const cardStartY = y + headerH + 30;
+      const subCardW = nodeW - 16;
+      const subCardStartX = x + 8;
+      const subCardStartY = y + headerH + statusLineH + sectionLabelH;
+
+      // Section label
+      const sectionLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      sectionLabel.setAttribute('x', subCardStartX + 2);
+      sectionLabel.setAttribute('y', y + headerH + statusLineH + sectionLabelH / 2 + 1);
+      sectionLabel.setAttribute('class', 'wf-flow-sub-section-label');
+      sectionLabel.setAttribute('dominant-baseline', 'central');
+      sectionLabel.textContent = '子任务';
+      g.appendChild(sectionLabel);
+
       task.subtasks.forEach((sub, j) => {
-        const col = j % cardsPerRow;
-        const row = Math.floor(j / cardsPerRow);
-        const cx = cardStartX + col * (cardW + cardGap);
-        const cy = cardStartY + row * (cardH + 6);
-        // Card body
+        const cx = subCardStartX;
+        const cy = subCardStartY + j * (cardH + cardGap);
+
+        // Card background
         const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
         bg.setAttribute('x', cx); bg.setAttribute('y', cy);
-        bg.setAttribute('width', cardW); bg.setAttribute('height', cardH);
-        bg.setAttribute('rx', 4);
+        bg.setAttribute('width', subCardW); bg.setAttribute('height', cardH);
+        bg.setAttribute('rx', 5);
         bg.setAttribute('class', 'wf-flow-sub-card');
         g.appendChild(bg);
-        // Colored left bar (status indicator)
+
+        // Left status bar
         const bar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        bar.setAttribute('x', cx + 2);
-        bar.setAttribute('y', cy + 3);
+        bar.setAttribute('x', cx + 1);
+        bar.setAttribute('y', cy + 4);
         bar.setAttribute('width', 3);
-        bar.setAttribute('height', cardH - 6);
+        bar.setAttribute('height', cardH - 8);
         bar.setAttribute('rx', 1.5);
         bar.setAttribute('class', 'wf-flow-sub-bar status-' + task.status);
         g.appendChild(bar);
-        // Sub-task name
+
+        // Status icon
+        const icons = { idle: '○', running: '◉', completed: '✓', failed: '✗', waiting: '…' };
+        const icon = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        icon.setAttribute('x', cx + 16);
+        icon.setAttribute('y', cy + cardH / 2);
+        icon.setAttribute('class', 'wf-flow-sub-icon status-' + task.status);
+        icon.setAttribute('dominant-baseline', 'central');
+        icon.textContent = icons[task.status] || '○';
+        g.appendChild(icon);
+
+        // Subtask name
         const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        label.setAttribute('x', cx + 10);
-        label.setAttribute('y', cy + cardH / 2);
+        label.setAttribute('x', cx + 32);
+        label.setAttribute('y', cy + cardH / 2 - 1);
         label.setAttribute('class', 'wf-flow-sub-label');
         label.setAttribute('dominant-baseline', 'central');
         label.textContent = sub.name;
         g.appendChild(label);
+
+        // Status text (right side)
+        const statusTexts = { idle: '待命', running: '执行中…', completed: '完成', failed: '失败', waiting: '等待' };
+        const stText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        stText.setAttribute('x', cx + subCardW - 8);
+        stText.setAttribute('y', cy + cardH / 2);
+        stText.setAttribute('class', 'wf-flow-sub-status status-' + task.status);
+        stText.setAttribute('dominant-baseline', 'central');
+        stText.setAttribute('text-anchor', 'end');
+        stText.textContent = statusTexts[task.status] || '';
+        g.appendChild(stText);
+
+        // Separator line between cards
+        if (j < task.subtasks.length - 1) {
+          const sep = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+          sep.setAttribute('x1', cx + 8);
+          sep.setAttribute('y1', cy + cardH);
+          sep.setAttribute('x2', cx + subCardW - 8);
+          sep.setAttribute('y2', cy + cardH);
+          sep.setAttribute('class', 'wf-flow-sub-sep');
+          g.appendChild(sep);
+        }
       });
     }
 
@@ -748,8 +906,12 @@ function wfHandleBranch(wf, taskId, branch) {
 
 function wfStartRun(wf) {
   if (wf && wf.real) {
-    wfTerminalWriteln(`[${wfTerminalTimestamp()}] 代码仿真APP流水线由外部脚本 run_pipeline.py 触发`, 'wf-terminal-muted');
-    wfTerminalWriteln(`[${wfTerminalTimestamp()}] 当前为实时监控模式，状态每 3 秒自动刷新`, 'wf-terminal-muted');
+    if (wf.source === 'sim-build') {
+      wfStartSimBuildRun(wf);
+    } else {
+      wfTerminalWriteln(`[${wfTerminalTimestamp()}] 代码仿真APP流水线由外部脚本 run_pipeline.py 触发`, 'wf-terminal-muted');
+      wfTerminalWriteln(`[${wfTerminalTimestamp()}] 当前为实时监控模式，状态每 3 秒自动刷新`, 'wf-terminal-muted');
+    }
     return;
   }
   if (wfState.sessionActive) return;

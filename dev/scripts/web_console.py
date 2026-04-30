@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import mimetypes
 import os
 import re
 import signal
 import socket
+import tempfile
 import subprocess
 import threading
 import time
@@ -36,6 +38,232 @@ from pipeline_monitor_lib import collect_state_files, handle_state_file, run_loo
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SUCCESS_STATUSES = {"pushed", "completed", "dry_run_success_detected"}
+INSTALL_DIR = REPO_ROOT / "dev" / "install"
+BUNDLE_NAME = "com.example.hmdemo"
+
+
+# ===== HDC device helpers (adapted from dev/install/images_app.py) =====
+
+def _hdc_run(args: list[str], timeout: int = 30, **kw: Any) -> subprocess.CompletedProcess:
+    return subprocess.run(["hdc"] + args, capture_output=True, text=True, timeout=timeout, **windows_subprocess_kwargs(), **kw)
+
+
+def _sim_log(server: Any, msg: str) -> None:
+    server.sim_build_logs.append(msg)
+    server.logger.info("[sim-build] %s", msg)
+
+
+def _sim_run(server: Any, device_id: str) -> None:
+    """Run the full install+send workflow in a background thread."""
+    steps = [
+        "检查 HDC 命令",
+        "连接设备",
+        "卸载旧应用",
+        "安装 HAP",
+        "启动应用",
+        "传输文件",
+        "关闭应用",
+    ]
+    hap_path = INSTALL_DIR / "entry-default-signed.hap"
+    output_folder = INSTALL_DIR / "output"
+
+    try:
+        server.sim_build_state = "running"
+        server.sim_build_logs.clear()
+        server.sim_build_step = 0
+
+        # Step 0: check HDC
+        _sim_log(server, f"[1/{len(steps)}] {steps[0]}...")
+        try:
+            _hdc_run(["--version"], timeout=5)
+            _sim_log(server, "HDC 命令可用")
+        except Exception as e:
+            _sim_log(server, f"错误: HDC 命令不可用 - {e}")
+            server.sim_build_state = "error"
+            return
+        server.sim_build_step = 1
+
+        # Step 1: connect device
+        _sim_log(server, f"[2/{len(steps)}] {steps[1]}: {device_id}")
+        try:
+            r = _hdc_run(["-t", device_id, "shell", "echo", "test"], timeout=10)
+            if r.returncode != 0:
+                _sim_log(server, "设备未连接，尝试 tconn...")
+                _hdc_run(["tconn", device_id], timeout=10)
+                time.sleep(2)
+            _sim_log(server, f"设备 {device_id} 已连接")
+        except Exception as e:
+            _sim_log(server, f"错误: 设备连接失败 - {e}")
+            server.sim_build_state = "error"
+            return
+        server.sim_build_step = 2
+
+        # Start screen mirror loop
+        server.sim_screen_running = True
+        threading.Thread(target=_sim_screen_loop, args=(server, device_id), name="sim-screen", daemon=True).start()
+
+        # Step 2: uninstall old app
+        _sim_log(server, f"[3/{len(steps)}] {steps[2]}: {BUNDLE_NAME}")
+        try:
+            _hdc_run(["-t", device_id, "uninstall", BUNDLE_NAME], timeout=30)
+            _sim_log(server, "旧应用已卸载（或不存在）")
+        except Exception as e:
+            _sim_log(server, f"卸载警告: {e}")
+        server.sim_build_step = 3
+
+        # Step 3: install HAP
+        _sim_log(server, f"[4/{len(steps)}] {steps[3]}: {hap_path}")
+        if not hap_path.exists():
+            _sim_log(server, f"错误: HAP 文件不存在 - {hap_path}")
+            server.sim_build_state = "error"
+            return
+        try:
+            r = _hdc_run(["-t", device_id, "install", "-r", str(hap_path)], timeout=60)
+            if r.returncode != 0:
+                _sim_log(server, f"安装失败: {r.stderr}")
+                server.sim_build_state = "error"
+                return
+            _sim_log(server, "HAP 安装成功")
+            time.sleep(3)
+        except Exception as e:
+            _sim_log(server, f"错误: 安装异常 - {e}")
+            server.sim_build_state = "error"
+            return
+        server.sim_build_step = 4
+
+        # Step 4: start app
+        _sim_log(server, f"[5/{len(steps)}] {steps[4]}: {BUNDLE_NAME}")
+        try:
+            r = _hdc_run(["-t", device_id, "shell", "aa", "start", "-a", "EntryAbility", "-b", BUNDLE_NAME], timeout=10)
+            if r.returncode != 0:
+                _sim_log(server, f"启动失败: {r.stderr}")
+                server.sim_build_state = "error"
+                return
+            _sim_log(server, "应用已启动")
+            time.sleep(2)
+        except Exception as e:
+            _sim_log(server, f"错误: 启动异常 - {e}")
+            server.sim_build_state = "error"
+            return
+        server.sim_build_step = 5
+
+        # Step 5: send files
+        _sim_log(server, f"[6/{len(steps)}] {steps[5]}: {output_folder}")
+        if not output_folder.exists():
+            _sim_log(server, f"错误: output 目录不存在 - {output_folder}")
+            server.sim_build_state = "error"
+            return
+        try:
+            r = _hdc_run(
+                ["-t", device_id, "file", "send", "-b", BUNDLE_NAME, ".", "./data/storage/el2/base/flight"],
+                timeout=120,
+                cwd=str(output_folder),
+            )
+            if r.returncode != 0:
+                _sim_log(server, f"文件传输失败: {r.stderr or r.stdout}")
+                server.sim_build_state = "error"
+                return
+            _sim_log(server, "文件传输成功")
+        except Exception as e:
+            _sim_log(server, f"错误: 传输异常 - {e}")
+            server.sim_build_state = "error"
+            return
+        server.sim_build_step = 6
+
+        # Step 6: stop app
+        _sim_log(server, f"[7/{len(steps)}] {steps[6]}: {BUNDLE_NAME}")
+        try:
+            _hdc_run(["-t", device_id, "shell", "aa", "force-stop", BUNDLE_NAME], timeout=10)
+            _sim_log(server, "应用已关闭")
+        except Exception as e:
+            _sim_log(server, f"关闭警告: {e}")
+
+        _sim_log(server, "全部完成!")
+        server.sim_build_state = "done"
+
+    except Exception as e:
+        _sim_log(server, f"未预期错误: {e}")
+        server.sim_build_state = "error"
+    finally:
+        server.sim_screen_running = False
+
+
+# ===== Screen mirror helpers =====
+
+REMOTE_SCREENSHOT = "/data/local/tmp/sim_screen.png"
+
+
+def _sim_screen_loop(server: Any, device_id: str) -> None:
+    """Background loop: capture device screen at ~300ms intervals."""
+    while server.sim_screen_running:
+        try:
+            png = _sim_capture_screen(device_id)
+            if png:
+                server.sim_screen_png = png
+                # Extract resolution from PNG IHDR chunk (bytes 16-23)
+                if len(png) > 24 and png[12:16] == b'IHDR':
+                    w = int.from_bytes(png[16:20], 'big')
+                    h = int.from_bytes(png[20:24], 'big')
+                    if w > 0 and h > 0:
+                        server.sim_screen_resolution = (w, h)
+        except Exception:
+            pass
+        time.sleep(0.3)
+
+
+def _sim_capture_screen(device_id: str) -> bytes | None:
+    """Capture device screen, return PNG bytes or None."""
+    try:
+        r = _hdc_run(["-t", device_id, "shell", "snapshot_display", "-f", REMOTE_SCREENSHOT], timeout=5)
+        if r.returncode != 0:
+            return None
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            r2 = _hdc_run(["-t", device_id, "file", "recv", REMOTE_SCREENSHOT, tmp_path], timeout=5)
+            if r2.returncode != 0:
+                return None
+            with open(tmp_path, "rb") as f:
+                return f.read()
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    except Exception:
+        return None
+
+
+def _sim_send_input(device_id: str, data: dict[str, Any]) -> bool:
+    """Send input event to device. Returns True on success."""
+    action = data.get("action", "")
+    try:
+        if action == "tap":
+            x, y = int(data["x"]), int(data["y"])
+            r = _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "click", str(x), str(y)], timeout=5)
+            return r.returncode == 0
+        elif action == "longpress":
+            x, y = int(data["x"]), int(data["y"])
+            r = _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "longClick", str(x), str(y)], timeout=5)
+            return r.returncode == 0
+        elif action == "swipe":
+            x1, y1 = int(data["x"]), int(data["y"])
+            x2, y2 = int(data["x2"]), int(data["y2"])
+            dur = int(data.get("duration", 300))
+            r = _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "swipe",
+                          str(x1), str(y1), str(x2), str(y2), str(dur)], timeout=5)
+            return r.returncode == 0
+        elif action == "key":
+            key = data.get("key", "BACK")
+            r = _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "keyEvent", key], timeout=5)
+            return r.returncode == 0
+        elif action == "text":
+            text = data.get("text", "")
+            r = _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "inputText", text], timeout=5)
+            return r.returncode == 0
+    except Exception:
+        return False
+    return False
 
 
 def parse_args() -> argparse.Namespace:
@@ -698,6 +926,32 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._send_json(details)
             return
 
+        if parsed.path == "/api/sim-build/status":
+            self._send_json({
+                "state": self.server.sim_build_state,
+                "step": self.server.sim_build_step,
+                "logs": self.server.sim_build_logs,
+            })
+            return
+
+        if parsed.path == "/api/sim-build/screen":
+            png = self.server.sim_screen_png
+            if not png:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(png)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(png)
+            return
+
+        if parsed.path == "/api/sim-build/resolution":
+            w, h = self.server.sim_screen_resolution
+            self._send_json({"width": w, "height": h})
+            return
+
         static_path = self.server.static_root / parsed.path.lstrip("/")
         if parsed.path in {"/", ""}:
             static_path = self.server.static_root / "index.html"
@@ -757,6 +1011,42 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             threading.Thread(target=_exit_after_response, name="dev-web-exit", daemon=True).start()
             return
 
+        if parsed.path == "/api/sim-build/run":
+            if self.server.sim_build_state == "running":
+                self._send_json({"ok": False, "message": "already_running"}, HTTPStatus.CONFLICT)
+                return
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                data = {}
+            device_id = (data.get("device_id") or "").strip()
+            if not device_id:
+                self._send_json({"ok": False, "message": "device_id required"}, HTTPStatus.BAD_REQUEST)
+                return
+            threading.Thread(target=_sim_run, args=(self.server, device_id), name="sim-build", daemon=True).start()
+            self._send_json({"ok": True})
+            return
+
+        if parsed.path == "/api/sim-build/input":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            # Get device_id from query string
+            qs = parse_qs(parsed.query)
+            device_id = (qs.get("device_id", [""])[0]).strip()
+            if not device_id:
+                self._send_json({"ok": False, "message": "device_id required"}, HTTPStatus.BAD_REQUEST)
+                return
+            ok = _sim_send_input(device_id, data)
+            self._send_json({"ok": ok})
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -783,6 +1073,14 @@ class ConsoleServer(ThreadingHTTPServer):
         self.static_root = static_root.resolve()
         self.logger = logger
         self.stop_event = stop_event
+        # sim-build state
+        self.sim_build_state = "idle"  # idle | running | done | error
+        self.sim_build_logs: list[str] = []
+        self.sim_build_step = -1  # current step index, -1 = not started
+        # screen mirror state
+        self.sim_screen_png: bytes = b""
+        self.sim_screen_resolution: tuple[int, int] = (0, 0)
+        self.sim_screen_running = False
 
 
 def start_inspection_thread(

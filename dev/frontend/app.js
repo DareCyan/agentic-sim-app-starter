@@ -3,11 +3,17 @@ function switchTab(tabName) {
   if (tabName !== "workflow") {
     wfStopRealTimer();
   }
+  if (tabName !== "sim-build") {
+    simBuildPollStop();
+  }
   if (tabName === "app-build") {
     refreshAll();
   }
   if (tabName === "exception" && !excCache.loaded) {
     excLoadAll();
+  }
+  if (tabName === "sim-build") {
+    simBuildRefresh();
   }
   document.querySelectorAll(".tab").forEach((t) => t.classList.remove("is-active"));
   document.querySelectorAll(".tab-pane").forEach((p) => p.classList.remove("is-active"));
