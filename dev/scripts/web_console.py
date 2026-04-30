@@ -926,6 +926,15 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._send_json(details)
             return
 
+        if parsed.path == "/api/sim-build/devices":
+            try:
+                result = _hdc_run(["list", "targets"], timeout=5)
+                lines = [l.strip() for l in result.stdout.splitlines() if l.strip() and l.strip() != "Empty"]
+                self._send_json({"devices": lines})
+            except Exception:
+                self._send_json({"devices": []})
+            return
+
         if parsed.path == "/api/sim-build/status":
             self._send_json({
                 "state": self.server.sim_build_state,

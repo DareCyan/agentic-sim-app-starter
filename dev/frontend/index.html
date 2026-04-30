@@ -92,8 +92,14 @@
 
           <div class="sim-build-controls">
             <div class="sim-input-group">
-              <label for="sim-device-id" data-i18n="sim.device-id">设备标识</label>
-              <input type="text" id="sim-device-id" placeholder="如 192.168.1.100:5555" data-i18n-placeholder="sim.device-placeholder" />
+              <label for="sim-device-select" data-i18n="sim.device-id">设备标识</label>
+              <div class="sim-device-picker">
+                <select id="sim-device-select">
+                  <option value="" data-i18n="sim.device-loading">搜索设备中...</option>
+                </select>
+                <input type="text" id="sim-device-manual" class="sim-device-manual is-hidden" placeholder="如 192.168.1.100:5555" data-i18n-placeholder="sim.device-placeholder" />
+                <button id="sim-device-refresh" class="sim-device-refresh-btn" title="刷新设备列表">↻</button>
+              </div>
             </div>
             <button id="sim-run-btn" class="sim-btn sim-btn-accent" data-i18n="sim.run">▶ 执行</button>
             <span id="sim-state-badge" class="sim-state-badge"></span>

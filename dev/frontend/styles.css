@@ -209,7 +209,8 @@ body {
   color: var(--muted);
 }
 
-.sim-input-group input {
+.sim-input-group input,
+.sim-input-group select {
   font: inherit;
   font-size: 13px;
   padding: 8px 12px;
@@ -222,8 +223,41 @@ body {
   transition: border-color 0.15s;
 }
 
-.sim-input-group input:focus {
+.sim-input-group input:focus,
+.sim-input-group select:focus {
   border-color: var(--accent);
+}
+
+.sim-device-picker {
+  display: flex;
+  gap: 4px;
+  align-items: stretch;
+}
+
+.sim-device-picker select {
+  flex: 1;
+  min-width: 0;
+}
+
+.sim-device-manual {
+  width: 200px !important;
+}
+
+.sim-device-refresh-btn {
+  font: inherit;
+  font-size: 16px;
+  padding: 6px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.sim-device-refresh-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .sim-btn {

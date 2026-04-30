@@ -20,12 +20,49 @@ const simEls = {
   btn: document.getElementById('sim-run-btn'),
   steps: document.getElementById('sim-steps'),
   log: document.getElementById('sim-log'),
-  deviceId: document.getElementById('sim-device-id'),
+  deviceSelect: document.getElementById('sim-device-select'),
+  deviceManual: document.getElementById('sim-device-manual'),
+  deviceRefresh: document.getElementById('sim-device-refresh'),
   screenImg: document.getElementById('sim-screen-img'),
   screenCanvas: document.getElementById('sim-screen-canvas'),
   screenViewport: document.getElementById('sim-screen-viewport'),
   screenPlaceholder: document.getElementById('sim-screen-placeholder'),
 };
+
+// ===== Device list =====
+
+function simFetchDevices() {
+  simEls.deviceSelect.innerHTML = '<option value="" data-i18n="sim.device-loading">' + t('sim.device-loading') + '</option>';
+  fetch('/api/sim-build/devices', { cache: 'no-store' })
+    .then(r => r.json())
+    .then(data => {
+      const devices = data.devices || [];
+      let html = '';
+      if (devices.length === 0) {
+        html += '<option value="" disabled>' + t('sim.device-none') + '</option>';
+      } else {
+        devices.forEach(d => {
+          html += '<option value="' + d + '">' + d + '</option>';
+        });
+      }
+      html += '<option value="__manual__">' + t('sim.device-manual') + '</option>';
+      simEls.deviceSelect.innerHTML = html;
+      // Show/hide manual input
+      simDeviceToggleManual();
+    })
+    .catch(() => {
+      simEls.deviceSelect.innerHTML = '<option value="__manual__">' + t('sim.device-manual') + '</option>';
+      simDeviceToggleManual();
+    });
+}
+
+function simDeviceToggleManual() {
+  const isManual = simEls.deviceSelect.value === '__manual__';
+  simEls.deviceManual.classList.toggle('is-hidden', !isManual);
+}
+
+simEls.deviceSelect.addEventListener('change', simDeviceToggleManual);
+simEls.deviceRefresh.addEventListener('click', simFetchDevices);
 
 // ===== Status polling =====
 
@@ -84,10 +121,19 @@ function simBuildRender() {
 
 // ===== Start flow =====
 
+function simGetSelectedDevice() {
+  const sel = simEls.deviceSelect.value;
+  if (sel === '__manual__') {
+    return simEls.deviceManual.value.trim();
+  }
+  return sel;
+}
+
 function simBuildStart() {
-  const deviceId = simEls.deviceId.value.trim();
+  const deviceId = simGetSelectedDevice();
   if (!deviceId) {
-    simEls.deviceId.focus();
+    if (simEls.deviceSelect.value === '__manual__') simEls.deviceManual.focus();
+    else simEls.deviceSelect.focus();
     return;
   }
   simBuild.deviceId = deviceId;
@@ -280,7 +326,7 @@ document.querySelectorAll('.sim-key-btn').forEach(btn => {
 // ===== Event bindings =====
 
 simEls.btn.addEventListener('click', simBuildStart);
-simEls.deviceId.addEventListener('keydown', (e) => {
+simEls.deviceManual.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') simBuildStart();
 });
 
@@ -288,3 +334,6 @@ simEls.deviceId.addEventListener('keydown', (e) => {
 document.addEventListener('langchange', () => {
   simBuildRender();
 });
+
+// Init: fetch device list
+simFetchDevices();

@@ -322,14 +322,16 @@ async function wfStopRealRun(wf) {
 }
 
 async function wfStartSimBuildRun(wf) {
-  // Get device ID from the sim-build tab input, or prompt
-  let deviceId = document.getElementById('sim-device-id')?.value?.trim();
+  // Get device ID from the sim-build tab select/input, or prompt
+  let deviceId = '';
+  const sel = document.getElementById('sim-device-select');
+  const manual = document.getElementById('sim-device-manual');
+  if (sel) {
+    deviceId = sel.value === '__manual__' ? (manual?.value?.trim() || '') : sel.value;
+  }
   if (!deviceId) {
     deviceId = prompt('请输入设备标识 (如 192.168.1.100:5555):');
     if (!deviceId) return;
-    // Sync to sim-build tab input
-    const input = document.getElementById('sim-device-id');
-    if (input) input.value = deviceId;
   }
 
   wfTerminalWriteln(`[${wfTerminalTimestamp()}] 启动图片仿真流程: ${deviceId}`, 'wf-terminal-muted');
