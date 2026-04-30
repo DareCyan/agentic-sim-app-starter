@@ -98,9 +98,10 @@ def _sim_run(server: Any, device_id: str) -> None:
             return
         server.sim_build_step = 2
 
-        # Start screen mirror loop
-        server.sim_screen_running = True
-        threading.Thread(target=_sim_screen_loop, args=(server, device_id), name="sim-screen", daemon=True).start()
+        # Start screen mirror loop (skip if already running for this device)
+        if not server.sim_screen_running:
+            server.sim_screen_running = True
+            threading.Thread(target=_sim_screen_loop, args=(server, device_id), name="sim-screen", daemon=True).start()
 
         # Step 2: uninstall old app
         _sim_log(server, f"[3/{len(steps)}] {steps[2]}: {BUNDLE_NAME}")
@@ -1018,6 +1019,26 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
             # ThreadingHTTPServer.shutdown()+serve_forever 在部分 Windows 环境无法可靠收束主线程，进程仍挂起
             threading.Thread(target=_exit_after_response, name="dev-web-exit", daemon=True).start()
+            return
+
+        if parsed.path == "/api/sim-build/mirror":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                data = {}
+            device_id = (data.get("device_id") or "").strip()
+            if not device_id:
+                self._send_json({"ok": False, "message": "device_id required"}, HTTPStatus.BAD_REQUEST)
+                return
+            # Stop existing screen loop if running for a different device
+            if self.server.sim_screen_running:
+                self.server.sim_screen_running = False
+                time.sleep(0.4)
+            self.server.sim_screen_running = True
+            threading.Thread(target=_sim_screen_loop, args=(self.server, device_id), name="sim-screen", daemon=True).start()
+            self._send_json({"ok": True})
             return
 
         if parsed.path == "/api/sim-build/run":

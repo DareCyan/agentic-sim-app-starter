@@ -12,6 +12,7 @@ const simBuild = {
   // Touch tracking
   touchStart: null,
   touchMoved: false,
+  mirrorStandalone: false,
 };
 
 // ===== DOM refs =====
@@ -59,6 +60,22 @@ function simFetchDevices() {
 function simDeviceToggleManual() {
   const isManual = simEls.deviceSelect.value === '__manual__';
   simEls.deviceManual.classList.toggle('is-hidden', !isManual);
+  if (!isManual && simEls.deviceSelect.value) {
+    simStartMirror(simEls.deviceSelect.value);
+  }
+}
+
+function simStartMirror(deviceId) {
+  if (!deviceId) return;
+  simBuild.deviceId = deviceId;
+  simBuild.mirrorStandalone = true;
+  fetch('/api/sim-build/mirror', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_id: deviceId }),
+  }).then(() => {
+    simScreenPollStart();
+  }).catch(() => {});
 }
 
 simEls.deviceSelect.addEventListener('change', simDeviceToggleManual);
@@ -79,9 +96,8 @@ function simBuildRefresh() {
       if (simBuild.state === 'running' && !simBuild.screenTimer) {
         simScreenPollStart();
       }
-      // Stop screen polling when done/error
-      if ((simBuild.state === 'done' || simBuild.state === 'error') && simBuild.screenTimer) {
-        // Keep showing last frame, don't stop immediately
+      // Stop screen polling when done/error (unless mirror was started independently)
+      if ((simBuild.state === 'done' || simBuild.state === 'error') && simBuild.screenTimer && !simBuild.mirrorStandalone) {
         setTimeout(() => simScreenPollStop(), 2000);
       }
     })
@@ -137,6 +153,7 @@ function simBuildStart() {
     return;
   }
   simBuild.deviceId = deviceId;
+  simBuild.mirrorStandalone = false;
 
   fetch('/api/sim-build/run', {
     method: 'POST',
