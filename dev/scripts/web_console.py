@@ -864,29 +864,46 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/issues/matrix":
-            rows = self.server.db.execute("SELECT domain, type_name, description, example FROM fault_types ORDER BY id").fetchall()
-            # Group by domain (preserving insertion order)
-            domain_order: list[str] = []
-            domain_types: dict[str, list[dict]] = {}
-            for domain, type_name, desc, example in rows:
-                if domain not in domain_types:
-                    domain_order.append(domain)
-                    domain_types[domain] = []
-                domain_types[domain].append({"name": type_name, "description": desc or "", "example": example or ""})
-            matrix = [{"column": d, "types": domain_types[d]} for d in domain_order]
+            db = self.server.db
+            # L1 domains
+            l1_rows = db.execute("SELECT id, name FROM fault_types WHERE level='L1' ORDER BY id").fetchall()
+            matrix = []
+            for l1_id, l1_name in l1_rows:
+                # L2 types under this domain
+                l2_rows = db.execute(
+                    "SELECT id, name, description FROM fault_types WHERE level='L2' AND parent_id=? ORDER BY id",
+                    (l1_id,)).fetchall()
+                types = []
+                for l2_id, l2_name, l2_meta in l2_rows:
+                    try:
+                        meta = json.loads(l2_meta) if l2_meta else {}
+                    except (json.JSONDecodeError, TypeError):
+                        meta = {"description": l2_meta or "", "example": ""}
+                    types.append({"id": l2_id, "name": l2_name,
+                                  "description": meta.get("description", ""),
+                                  "example": meta.get("example", "")})
+                matrix.append({"column": l1_name, "types": types})
             self._send_json(matrix)
             return
 
         if parsed.path == "/api/issues/details":
-            rows = self.server.db.execute(
-                "SELECT app, flow, exception_column, exception_type, exception_category, exception_description, questions FROM fault_details ORDER BY id"
-            ).fetchall()
+            db = self.server.db
+            rows = db.execute("""
+                SELECT s.app, s.flow, s.priority, s.description, s.questions,
+                       l2.name AS category, l1.name AS domain
+                FROM scenarios s
+                JOIN fault_types l3 ON s.fault_type_id = l3.id
+                JOIN fault_types l2 ON l3.parent_id = l2.id
+                JOIN fault_types l1 ON l2.parent_id = l1.id
+                ORDER BY s.id
+            """).fetchall()
             result = []
-            for app, flow, col, typ, cat, desc, questions_json in rows:
+            for app, flow, pri, desc, questions_json, category, domain in rows:
                 result.append({
                     "app": app, "flow": flow,
-                    "exception_column": col or "", "exception_type": typ or "",
-                    "exception_category": cat or "", "exception_description": desc or "",
+                    "exception_column": domain, "exception_type": domain,
+                    "exception_category": category, "exception_description": desc,
+                    "_priority": pri,
                     "questions": json.loads(questions_json) if questions_json else [],
                 })
             self._send_json(result)
@@ -1065,9 +1082,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/issues/seed":
             self.server.db.executescript("""
-                DELETE FROM apps;
+                DELETE FROM scenarios;
                 DELETE FROM fault_types;
-                DELETE FROM fault_details;
+                DELETE FROM apps;
             """)
             self.server.db.commit()
             self.server._seed_from_files()
@@ -1123,20 +1140,19 @@ class ConsoleServer(ThreadingHTTPServer):
             );
             CREATE TABLE IF NOT EXISTS fault_types (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                domain TEXT NOT NULL,
-                type_name TEXT NOT NULL UNIQUE,
-                description TEXT,
-                example TEXT
+                parent_id INTEGER REFERENCES fault_types(id),
+                level TEXT NOT NULL CHECK(level IN ('L1','L2','L3','L4')),
+                name TEXT NOT NULL,
+                description TEXT DEFAULT ''
             );
-            CREATE TABLE IF NOT EXISTS fault_details (
+            CREATE TABLE IF NOT EXISTS scenarios (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 app TEXT NOT NULL,
                 flow TEXT NOT NULL,
-                exception_column TEXT,
-                exception_type TEXT,
-                exception_category TEXT,
-                exception_description TEXT,
-                questions TEXT
+                fault_type_id INTEGER NOT NULL REFERENCES fault_types(id),
+                priority TEXT DEFAULT 'P3',
+                description TEXT DEFAULT '',
+                questions TEXT DEFAULT '[]'
             );
             CREATE TABLE IF NOT EXISTS user_config (
                 key TEXT PRIMARY KEY,
@@ -1164,7 +1180,8 @@ class ConsoleServer(ThreadingHTTPServer):
                     current_cat = val0
                 if len(row) > 1 and row[1].strip():
                     self.db.execute("INSERT INTO apps (category, flow) VALUES (?, ?)", (current_cat, row[1].strip()))
-        # Seed fault_types from issues.csv
+        # Seed fault_types hierarchy from issues.csv (L1 domain, L2 type)
+        csv_l2_types: dict[str, str] = {}  # type_name -> domain
         matrix_path = issues_dir / "issues.csv"
         if matrix_path.exists():
             with matrix_path.open("r", encoding="utf-8") as f:
@@ -1173,32 +1190,68 @@ class ConsoleServer(ThreadingHTTPServer):
             if rows:
                 header = rows[0]
                 sub = rows[1] if len(rows) > 1 else []
-                desc = rows[2] if len(rows) > 2 else []
-                examples = rows[3] if len(rows) > 3 else []
+                desc_row = rows[2] if len(rows) > 2 else []
+                examples_row = rows[3] if len(rows) > 3 else []
+                # L1: domains
+                domain_ids: dict[str, int] = {}
+                current_col = ""
+                for i, h in enumerate(header):
+                    h_stripped = h.strip()
+                    if h_stripped:
+                        current_col = h_stripped
+                    if current_col and current_col not in domain_ids:
+                        cur = self.db.execute(
+                            "INSERT INTO fault_types (level, name) VALUES ('L1', ?)", (current_col,))
+                        domain_ids[current_col] = cur.lastrowid
+                # L2: types (store description + example as JSON in description field)
                 current_col = ""
                 for i, h in enumerate(header):
                     h_stripped = h.strip()
                     if h_stripped:
                         current_col = h_stripped
                     if i < len(sub) and sub[i].strip():
+                        type_name = sub[i].strip()
+                        desc = desc_row[i].strip() if i < len(desc_row) else ""
+                        example = examples_row[i].strip() if i < len(examples_row) else ""
+                        meta = json.dumps({"description": desc, "example": example}, ensure_ascii=False)
                         self.db.execute(
-                            "INSERT OR IGNORE INTO fault_types (domain, type_name, description, example) VALUES (?, ?, ?, ?)",
-                            (current_col, sub[i].strip(),
-                             desc[i].strip() if i < len(desc) else "",
-                             examples[i].strip() if i < len(examples) else ""),
-                        )
-        # Seed fault_details from issues.json
+                            "INSERT INTO fault_types (parent_id, level, name, description) VALUES (?, 'L2', ?, ?)",
+                            (domain_ids.get(current_col), type_name, meta))
+                        csv_l2_types[type_name] = current_col
+        # Seed L3 fault descriptions and scenarios from issues.json
         details_path = issues_dir / "issues.json"
         if details_path.exists():
             details = json.loads(details_path.read_text(encoding="utf-8"))
+            # Build L3 cache: (parent_l2_id, description) -> l3_id
+            l3_cache: dict[tuple[int, str], int] = {}
             for entry in details:
+                category = entry.get("exception_category", "")
+                description = entry.get("exception_description", "")
+                app = entry.get("app", "")
+                flow = entry.get("flow", "")
+                questions = entry.get("questions", [])
+                # Find L2 parent
+                l2_row = self.db.execute(
+                    "SELECT id FROM fault_types WHERE level='L2' AND name=?", (category,)).fetchone()
+                if not l2_row:
+                    continue
+                l2_id = l2_row[0]
+                # Create or reuse L3
+                l3_key = (l2_id, description)
+                if l3_key not in l3_cache:
+                    cur = self.db.execute(
+                        "INSERT INTO fault_types (parent_id, level, name, description) VALUES (?, 'L3', ?, ?)",
+                        (l2_id, category, description))
+                    l3_cache[l3_key] = cur.lastrowid
+                l3_id = l3_cache[l3_key]
+                # Extract priority
+                pri_match = re.match(r"\[(P\d+)\]", description)
+                priority = pri_match.group(1) if pri_match else "P3"
+                # Insert scenario
                 self.db.execute(
-                    "INSERT INTO fault_details (app, flow, exception_column, exception_type, exception_category, exception_description, questions) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (entry.get("app", ""), entry.get("flow", ""),
-                     entry.get("exception_column", ""), entry.get("exception_type", ""),
-                     entry.get("exception_category", ""), entry.get("exception_description", ""),
-                     json.dumps(entry.get("questions", []), ensure_ascii=False)),
-                )
+                    "INSERT INTO scenarios (app, flow, fault_type_id, priority, description, questions) VALUES (?, ?, ?, ?, ?, ?)",
+                    (app, flow, l3_id, priority, description,
+                     json.dumps(questions, ensure_ascii=False)))
         self.db.commit()
         self.logger.info("[db] Seeded database from files: %s", self.db_path)
 

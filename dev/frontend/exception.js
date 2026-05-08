@@ -49,7 +49,7 @@ async function excLoadAll() {
     excState.matrix = matrix || [];
     excState.details = (details || []).map(d => {
       const p = excParsePriority(d.exception_description);
-      return { ...d, _priority: p.priority, _desc: p.desc };
+      return { ...d, _priority: d._priority || p.priority, _desc: p.desc };
     });
     excDeriveData();
     excCache.loaded = true;
