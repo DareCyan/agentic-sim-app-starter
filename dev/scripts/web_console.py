@@ -871,23 +871,16 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             for l1_id, l1_name in l1_rows:
                 # L2 types under this domain
                 l2_rows = db.execute(
-                    "SELECT id, name, description FROM fault_types WHERE level='L2' AND parent_id=? ORDER BY id",
+                    "SELECT id, name FROM fault_types WHERE level='L2' AND parent_id=? ORDER BY id",
                     (l1_id,)).fetchall()
                 types = []
-                for l2_id, l2_name, l2_meta in l2_rows:
-                    try:
-                        meta = json.loads(l2_meta) if l2_meta else {}
-                    except (json.JSONDecodeError, TypeError):
-                        meta = {"description": l2_meta or "", "example": ""}
-                    # L3 children of this L2
+                for l2_id, l2_name in l2_rows:
+                    # L3 columns under this L2 (one per CSV column)
                     l3_rows = db.execute(
                         "SELECT id, name, description FROM fault_types WHERE level='L3' AND parent_id=? ORDER BY id",
                         (l2_id,)).fetchall()
-                    l3_list = [{"id": r[0], "name": r[1], "description": r[2] or ""} for r in l3_rows]
-                    types.append({"id": l2_id, "name": l2_name,
-                                  "description": meta.get("description", ""),
-                                  "example": meta.get("example", ""),
-                                  "l3": l3_list})
+                    l3_cols = [{"id": r[0], "name": r[1], "example": r[2] or ""} for r in l3_rows]
+                    types.append({"id": l2_id, "name": l2_name, "columns": l3_cols})
                 matrix.append({"column": l1_name, "types": types})
             self._send_json(matrix)
             return
@@ -896,7 +889,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             db = self.server.db
             rows = db.execute("""
                 SELECT s.app, s.flow, s.priority, s.description, s.questions,
-                       l2.name AS category, l1.name AS domain
+                       l3.name AS l3_name, l2.name AS category, l1.name AS domain
                 FROM scenarios s
                 JOIN fault_types l3 ON s.fault_type_id = l3.id
                 JOIN fault_types l2 ON l3.parent_id = l2.id
@@ -904,11 +897,12 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 ORDER BY s.id
             """).fetchall()
             result = []
-            for app, flow, pri, desc, questions_json, category, domain in rows:
+            for app, flow, pri, desc, questions_json, l3_name, category, domain in rows:
                 result.append({
                     "app": app, "flow": flow,
                     "exception_column": domain, "exception_type": domain,
                     "exception_category": category, "exception_description": desc,
+                    "exception_l3": l3_name,
                     "_priority": pri,
                     "questions": json.loads(questions_json) if questions_json else [],
                 })
@@ -917,7 +911,12 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/user/config":
             rows = self.server.db.execute("SELECT key, value FROM user_config").fetchall()
-            self._send_json(dict(rows))
+            config = {}
+            for k, v in rows:
+                if k == "llm_api_key" and v and len(v) > 8:
+                    v = v[:4] + "****" + v[-4:]
+                config[k] = v
+            self._send_json(config)
             return
 
         if parsed.path == "/api/sim-build/devices":
@@ -1086,6 +1085,200 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
             return
 
+        if parsed.path == "/api/llm/validate":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            api_url = (data.get("api_url") or "").rstrip("/")
+            api_key = data.get("api_key") or ""
+            model = data.get("model") or ""
+            # If no key provided (masked), use stored key
+            if not api_key:
+                row = self.server.db.execute("SELECT value FROM user_config WHERE key='llm_api_key'").fetchone()
+                if row and row[0] and "****" not in row[0]:
+                    api_key = row[0]
+            if not api_url:
+                self._send_json({"ok": False, "message": "api_url required"}, HTTPStatus.BAD_REQUEST)
+                return
+            # Validate by calling /v1/models (or /models) endpoint
+            import urllib.request
+            import urllib.error
+            models_url = api_url.rstrip("/") + "/models"
+            req = urllib.request.Request(models_url)
+            if api_key:
+                req.add_header("Authorization", f"Bearer {api_key}")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    body_data = json.loads(resp.read().decode("utf-8"))
+                    if model:
+                        # Check if model exists in the list
+                        models = [m.get("id", "") for m in body_data.get("data", [])]
+                        if model not in models:
+                            self._send_json({"ok": False, "message": f"model '{model}' not found. available: {models[:10]}"})
+                            return
+                    self._send_json({"ok": True, "message": "validated"})
+            except urllib.error.HTTPError as e:
+                self._send_json({"ok": False, "message": f"HTTP {e.code}: {e.reason}"})
+            except Exception as e:
+                self._send_json({"ok": False, "message": str(e)})
+            return
+
+        if parsed.path == "/api/llm/classify":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            description = (data.get("description") or "").strip()
+            if not description:
+                self._send_json({"ok": False, "message": "description required"}, HTTPStatus.BAD_REQUEST)
+                return
+            # Read LLM config
+            cfg_rows = self.server.db.execute("SELECT key, value FROM user_config").fetchall()
+            cfg = dict(cfg_rows)
+            api_url = (cfg.get("llm_api_url") or "").rstrip("/")
+            api_key = cfg.get("llm_api_key") or ""
+            model = cfg.get("llm_model") or ""
+            if not api_url:
+                self._send_json({"ok": False, "message": "llm_api_url not configured"})
+                return
+            # Gather existing context
+            apps = [r[0] for r in self.server.db.execute("SELECT DISTINCT category FROM apps ORDER BY id").fetchall()]
+            flows_rows = self.server.db.execute("SELECT category, flow FROM apps ORDER BY id").fetchall()
+            app_flows = {}
+            for cat, fl in flows_rows:
+                app_flows.setdefault(cat, []).append(fl)
+            l2_rows = self.server.db.execute(
+                "SELECT l2.name, l1.name FROM fault_types l2 JOIN fault_types l1 ON l2.parent_id=l1.id WHERE l2.level='L2' ORDER BY l2.id"
+            ).fetchall()
+            l2_list = [{"name": r[0], "l1": r[1]} for r in l2_rows]
+            # Gather L3 names grouped by L2
+            l3_rows = self.server.db.execute(
+                "SELECT l3.name, l2.name FROM fault_types l3 JOIN fault_types l2 ON l3.parent_id=l2.id WHERE l3.level='L3' ORDER BY l3.id"
+            ).fetchall()
+            l3_by_l2 = {}
+            for l3_name, l2_name in l3_rows:
+                l3_by_l2.setdefault(l2_name, []).append(l3_name)
+            # Gather existing fault descriptions (up to 50 samples)
+            desc_rows = self.server.db.execute(
+                "SELECT description FROM scenarios ORDER BY id DESC LIMIT 50"
+            ).fetchall()
+            existing_descs = [r[0] for r in desc_rows]
+            # Build prompt
+            prompt = (
+                "你是一个异常场景分类助手。根据用户描述的故障场景，判断它属于哪个应用(app)、流程(flow)、故障分类L2(category)、故障类型L3(type)、优先级(priority)。\n\n"
+                "现有应用分类: " + json.dumps(apps, ensure_ascii=False) + "\n"
+                "现有应用-流程映射: " + json.dumps(app_flows, ensure_ascii=False) + "\n"
+                "现有故障分类(L2)及其上级(L1): " + json.dumps(l2_list, ensure_ascii=False) + "\n"
+                "现有故障类型(L3)按L2分组: " + json.dumps(l3_by_l2, ensure_ascii=False) + "\n"
+                "现有故障描述示例: " + json.dumps(existing_descs[:30], ensure_ascii=False) + "\n\n"
+                "用户描述: " + description + "\n\n"
+                "请返回纯JSON，格式如下(不要包含markdown代码块标记):\n"
+                '{"app":"应用名","flow":"流程名","l2_category":"故障分类名","l1_name":"所属L1域名","l3_name":"故障类型名","description":"完整的故障描述(带[Pn]前缀)","priority":"P0/P1/P2/P3"}\n\n'
+                "规则:\n"
+                "1. app和flow必须从现有列表中选择。如果没有合适的，选最接近的\n"
+                "2. l2_category必须从现有L2列表中选择，l1_name必须是该L2对应的L1。只有完全找不到合适的才新建\n"
+                "3. l3_name必须从现有L3列表中选择最匹配的，只有完全找不到合适的才新建\n"
+                "4. description必须优先从现有故障描述中匹配最相似的，格式: [优先级] 具体描述。用户原始输入作为示例场景，不要直接作为故障描述\n"
+                "5. 只返回JSON，不要其他文字"
+            )
+            # Call LLM
+            import urllib.request
+            import urllib.error
+            chat_url = api_url.rstrip("/") + "/chat/completions"
+            payload = json.dumps({
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                chat_url, data=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            if api_key:
+                req.add_header("Authorization", f"Bearer {api_key}")
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    resp_data = json.loads(resp.read().decode("utf-8"))
+                    content = resp_data["choices"][0]["message"]["content"].strip()
+                    # Strip markdown code fences if present
+                    if content.startswith("```"):
+                        content = content.split("\n", 1)[1]
+                    if content.endswith("```"):
+                        content = content.rsplit("```", 1)[0]
+                    content = content.strip()
+                    result = json.loads(content)
+                    result["ok"] = True
+                    self._send_json(result)
+            except urllib.error.HTTPError as e:
+                self._send_json({"ok": False, "message": f"LLM HTTP {e.code}: {e.reason}"})
+            except Exception as e:
+                self._send_json({"ok": False, "message": str(e)})
+            return
+
+        if parsed.path == "/api/issues/insert":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            description = data.get("description", "")
+            app = data.get("app", "")
+            flow = data.get("flow", "")
+            l2_name = data.get("l2_name", "")
+            l3_name = data.get("l3_name", "")
+            l1_name = data.get("l1_name", "")
+            priority = data.get("priority", "P3")
+            questions = data.get("questions", [])
+            new_app_category = data.get("new_app_category")
+            new_flow = data.get("new_flow")
+            if not all([app, flow, l2_name, l3_name, description]):
+                self._send_json({"ok": False, "message": "missing required fields"})
+                return
+            db = self.server.db
+            # 1. Insert new app if needed
+            if new_app_category:
+                existing = db.execute("SELECT id FROM apps WHERE category=? AND flow=?", (app, flow)).fetchone()
+                if not existing:
+                    db.execute("INSERT INTO apps (category, flow) VALUES (?, ?)", (app, flow))
+            # 2. Resolve or create L2
+            l2_row = db.execute("SELECT id FROM fault_types WHERE level='L2' AND name=?", (l2_name,)).fetchone()
+            if l2_row:
+                l2_id = l2_row[0]
+            else:
+                # Need L1
+                l1_row = db.execute("SELECT id FROM fault_types WHERE level='L1' AND name=?", (l1_name,)).fetchone()
+                if not l1_row:
+                    self._send_json({"ok": False, "message": f"L1 '{l1_name}' not found"})
+                    return
+                l1_id = l1_row[0]
+                db.execute("INSERT INTO fault_types (parent_id, level, name) VALUES (?, 'L2', ?)", (l1_id, l2_name))
+                l2_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            # 3. Resolve or create L3
+            l3_row = db.execute("SELECT id FROM fault_types WHERE level='L3' AND name=? AND parent_id=?", (l3_name, l2_id)).fetchone()
+            if l3_row:
+                l3_id = l3_row[0]
+            else:
+                db.execute("INSERT INTO fault_types (parent_id, level, name, description) VALUES (?, 'L3', ?, '')", (l2_id, l3_name))
+                l3_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            # 4. Insert scenario
+            db.execute(
+                "INSERT INTO scenarios (app, flow, fault_type_id, priority, description, questions) VALUES (?, ?, ?, ?, ?, ?)",
+                (app, flow, l3_id, priority, description, json.dumps(questions, ensure_ascii=False))
+            )
+            db.commit()
+            scenario_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            self._send_json({"ok": True, "scenario_id": scenario_id})
+            return
+
         if parsed.path == "/api/issues/seed":
             self.server.db.executescript("""
                 DELETE FROM scenarios;
@@ -1186,9 +1379,12 @@ class ConsoleServer(ThreadingHTTPServer):
                     current_cat = val0
                 if len(row) > 1 and row[1].strip():
                     self.db.execute("INSERT INTO apps (category, flow) VALUES (?, ?)", (current_cat, row[1].strip()))
-        # Seed fault_types hierarchy from issues.csv (L1 domain, L2 type)
-        csv_l2_types: dict[str, str] = {}  # type_name -> domain
+        # Seed fault_types hierarchy from issues.csv
+        # CSV structure: row0=L1 domains, row1=L2 types, row2=L3 names, row3=L4 examples
+        # L2 types may span multiple columns (empty adjacent cells = colspan)
         matrix_path = issues_dir / "issues.csv"
+        # col_info[i] = {"l1": domain, "l2": type_name, "l3": l3_name, "l4": example}
+        col_info: list[dict] = []
         if matrix_path.exists():
             with matrix_path.open("r", encoding="utf-8") as f:
                 reader = csv.reader(f)
@@ -1198,58 +1394,84 @@ class ConsoleServer(ThreadingHTTPServer):
                 sub = rows[1] if len(rows) > 1 else []
                 desc_row = rows[2] if len(rows) > 2 else []
                 examples_row = rows[3] if len(rows) > 3 else []
-                # L1: domains
+                ncols = max(len(header), len(sub), len(desc_row), len(examples_row))
+                # Resolve L1 domain per column
+                current_l1 = ""
+                for i in range(ncols):
+                    h = header[i].strip() if i < len(header) else ""
+                    if h:
+                        current_l1 = h
+                    col_info.append({"l1": current_l1, "l2": "", "l3": "", "l4": ""})
+                # Resolve L2 type per column (colspan: empty cell inherits previous L2)
+                current_l2 = ""
+                for i in range(ncols):
+                    s = sub[i].strip() if i < len(sub) else ""
+                    if s:
+                        current_l2 = s
+                    col_info[i]["l2"] = current_l2
+                # L3 and L4 are per-column (no colspan)
+                for i in range(ncols):
+                    col_info[i]["l3"] = desc_row[i].strip() if i < len(desc_row) else ""
+                    col_info[i]["l4"] = examples_row[i].strip() if i < len(examples_row) else ""
+                # L1: domains (unique)
                 domain_ids: dict[str, int] = {}
-                current_col = ""
-                for i, h in enumerate(header):
-                    h_stripped = h.strip()
-                    if h_stripped:
-                        current_col = h_stripped
-                    if current_col and current_col not in domain_ids:
+                for c in col_info:
+                    d = c["l1"]
+                    if d and d not in domain_ids:
                         cur = self.db.execute(
-                            "INSERT INTO fault_types (level, name) VALUES ('L1', ?)", (current_col,))
-                        domain_ids[current_col] = cur.lastrowid
-                # L2: types (store description + example as JSON in description field)
-                current_col = ""
-                for i, h in enumerate(header):
-                    h_stripped = h.strip()
-                    if h_stripped:
-                        current_col = h_stripped
-                    if i < len(sub) and sub[i].strip():
-                        type_name = sub[i].strip()
-                        desc = desc_row[i].strip() if i < len(desc_row) else ""
-                        example = examples_row[i].strip() if i < len(examples_row) else ""
-                        meta = json.dumps({"description": desc, "example": example}, ensure_ascii=False)
-                        self.db.execute(
+                            "INSERT INTO fault_types (level, name) VALUES ('L1', ?)", (d,))
+                        domain_ids[d] = cur.lastrowid
+                # L2: types (unique per name)
+                l2_ids: dict[str, int] = {}
+                for c in col_info:
+                    name = c["l2"]
+                    if name and name not in l2_ids:
+                        cur = self.db.execute(
                             "INSERT INTO fault_types (parent_id, level, name, description) VALUES (?, 'L2', ?, ?)",
-                            (domain_ids.get(current_col), type_name, meta))
-                        csv_l2_types[type_name] = current_col
-        # Seed L3 fault descriptions and scenarios from issues.json
+                            (domain_ids.get(c["l1"]), name, ""))
+                        l2_ids[name] = cur.lastrowid
+                # L3: one per CSV column
+                # col_l3_ids[i] = L3 fault_type id for column i
+                col_l3_ids: list[int] = []
+                for i, c in enumerate(col_info):
+                    l2_name = c["l2"]
+                    l3_name = c["l3"] or l2_name
+                    l4_desc = c["l4"]
+                    l2_id = l2_ids.get(l2_name)
+                    if l2_id:
+                        cur = self.db.execute(
+                            "INSERT INTO fault_types (parent_id, level, name, description) VALUES (?, 'L3', ?, ?)",
+                            (l2_id, l3_name, l4_desc))
+                        col_l3_ids.append(cur.lastrowid)
+                    else:
+                        col_l3_ids.append(0)
+        # Seed scenarios from issues.json
+        # Map each scenario to the L3 column matching its exception_l3 or exception_category
         details_path = issues_dir / "issues.json"
         if details_path.exists():
             details = json.loads(details_path.read_text(encoding="utf-8"))
-            # Build L3 cache: (parent_l2_id, description) -> l3_id
-            l3_cache: dict[tuple[int, str], int] = {}
+            # Build L3 name → column id mapping
+            l3_name_to_id: dict[str, int] = {}
+            # Also build L2 name → first L3 column id as fallback
+            l2_first_l3: dict[str, int] = {}
+            for i, c in enumerate(col_info):
+                if i < len(col_l3_ids) and col_l3_ids[i]:
+                    l3_name_to_id[c["l3"]] = col_l3_ids[i]
+                if c["l2"] and c["l2"] not in l2_first_l3 and i < len(col_l3_ids) and col_l3_ids[i]:
+                    l2_first_l3[c["l2"]] = col_l3_ids[i]
             for entry in details:
                 category = entry.get("exception_category", "")
+                exception_l3 = entry.get("exception_l3", "")
                 description = entry.get("exception_description", "")
                 app = entry.get("app", "")
                 flow = entry.get("flow", "")
                 questions = entry.get("questions", [])
-                # Find L2 parent
-                l2_row = self.db.execute(
-                    "SELECT id FROM fault_types WHERE level='L2' AND name=?", (category,)).fetchone()
-                if not l2_row:
+                # Find L3 id: prefer exception_l3, fall back to first L3 under L2
+                l3_id = l3_name_to_id.get(exception_l3) if exception_l3 else None
+                if not l3_id:
+                    l3_id = l2_first_l3.get(category)
+                if not l3_id:
                     continue
-                l2_id = l2_row[0]
-                # Create or reuse L3
-                l3_key = (l2_id, description)
-                if l3_key not in l3_cache:
-                    cur = self.db.execute(
-                        "INSERT INTO fault_types (parent_id, level, name, description) VALUES (?, 'L3', ?, ?)",
-                        (l2_id, category, description))
-                    l3_cache[l3_key] = cur.lastrowid
-                l3_id = l3_cache[l3_key]
                 # Extract priority
                 pri_match = re.match(r"\[(P\d+)\]", description)
                 priority = pri_match.group(1) if pri_match else "P3"

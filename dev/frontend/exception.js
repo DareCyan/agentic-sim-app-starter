@@ -2,18 +2,16 @@
 
 const excState = {
   apps: [],          // [{category, flow}, ...]
-  matrix: [],        // [{column, types: [{name, description, example}]}, ...]
+  matrix: [],        // raw API response
   details: [],       // full issues.json (with _priority, _desc)
   // Derived
   appNames: [],      // sorted unique app names
   appFlows: {},      // app → [flows]
-  types: [],         // all exception types in CSV order
-  typeDomain: {},    // type → domain name
-  domainTypes: {},   // domain → [types]
-  typeDesc: {},      // type → description
-  typeExample: {},   // type → example
-  cellData: {},      // "app||flow||type" → {primary, entries}
-  totalScenarios: 0, // total questions count
+  // Column-based structure (L3 is the column unit)
+  columns: [],       // [{id, name, example, l2_name, l1_name, ci}, ...]
+  l2Groups: [],      // [{name, l1_name, colStart, colEnd}, ...]
+  cellData: {},      // "app||flow||l3_name" → {primary, entries}
+  totalScenarios: 0,
   // Selection
   selectedCols: new Set(), // column indices
   selectedRow: -1,         // row index (-1 = none)
@@ -24,10 +22,10 @@ const excState = {
 const excCache = { loaded: false };
 
 const PRI_COLORS = {
-  P0: '#dc2626',  // red
-  P1: '#d97706',  // orange
-  P2: '#2563eb',  // blue
-  P3: '#6b7280',  // gray
+  P0: '#dc2626',
+  P1: '#d97706',
+  P2: '#2563eb',
+  P3: '#6b7280',
 };
 
 function excParsePriority(desc) {
@@ -81,38 +79,46 @@ function excDeriveData() {
     }
   });
 
-  // Types in CSV order, with domain/desc/example/l3 mapping
-  excState.types = [];
-  excState.typeDomain = {};
-  excState.domainTypes = {};
-  excState.typeDesc = {};
-  excState.typeExample = {};
-  excState.typeL3 = {};  // type name → [{id, name, description}]
-
+  // Build flat columns list from matrix API (L3-based)
+  excState.columns = [];
+  excState.l2Groups = [];
+  let ci = 0;
   excState.matrix.forEach(group => {
-    const domain = group.column;
-    excState.domainTypes[domain] = [];
-    (group.types || []).forEach(t => {
-      excState.types.push(t.name);
-      excState.typeDomain[t.name] = domain;
-      excState.domainTypes[domain].push(t.name);
-      excState.typeDesc[t.name] = t.description || '';
-      excState.typeExample[t.name] = t.example || '';
-      excState.typeL3[t.name] = t.l3 || [];
+    const l1Name = group.column;
+    (group.types || []).forEach(l2 => {
+      const l3Cols = l2.columns || [];
+      const colStart = ci;
+      l3Cols.forEach(col => {
+        excState.columns.push({
+          id: col.id,
+          name: col.name,
+          example: col.example || '',
+          l2_name: l2.name,
+          l1_name: l1Name,
+          ci: ci,
+        });
+        ci++;
+      });
+      excState.l2Groups.push({
+        name: l2.name,
+        l1_name: l1Name,
+        colStart: colStart,
+        colEnd: ci - 1,
+      });
     });
   });
 
-  // Build cell data: "app||flow||category" → {entry (highest pri), entries: []}
+  // Build cell data: "app||flow||l3_name" → {primary, entries}
   excState.cellData = {};
   excState.totalScenarios = 0;
   const PRI_RANK = { P0: 0, P1: 1, P2: 2, P3: 3, '': 4 };
   excState.details.forEach(d => {
-    const key = d.app + '||' + d.flow + '||' + d.exception_category;
+    const l3Name = d.exception_l3 || d.exception_category;
+    const key = d.app + '||' + d.flow + '||' + l3Name;
     if (!excState.cellData[key]) {
       excState.cellData[key] = { primary: d, entries: [] };
     }
     excState.cellData[key].entries.push(d);
-    // Keep highest priority as primary
     if (PRI_RANK[d._priority] < PRI_RANK[excState.cellData[key].primary._priority]) {
       excState.cellData[key].primary = d;
     }
@@ -138,6 +144,9 @@ function excDeriveData() {
 function excBuild() {
   excBuildStats();
   excBuildMatrix();
+  // Bind add button
+  const addBtn = document.getElementById('exc-add-btn');
+  if (addBtn) addBtn.addEventListener('click', excOpenAddModal);
 }
 
 /* ===== Stats Bar ===== */
@@ -148,27 +157,20 @@ function excBuildStats() {
   const scenarios = excState.totalScenarios;
   const apps = excState.appNames.length;
   const flows = excState.rows.filter(r => r.type === 'flow').length;
-  const types = excState.types.length;
-  const domains = excState.matrix.length;
+  const colCount = excState.columns.length;
+  const l2Count = excState.l2Groups.length;
 
   let html = '';
   html += '<div class="exc-stat-item"><span class="exc-stat-num exc-stat-accent">' + scenarios + '</span><span class="exc-stat-label">' + t('exc.stat-scenarios') + '</span></div>';
   html += '<div class="exc-stat-item"><span class="exc-stat-num">' + total + '</span><span class="exc-stat-label">' + t('exc.stat-total') + '</span></div>';
   html += '<div class="exc-stat-item"><span class="exc-stat-num">' + apps + '</span><span class="exc-stat-label">' + t('exc.stat-apps') + '</span></div>';
   html += '<div class="exc-stat-item"><span class="exc-stat-num">' + flows + '</span><span class="exc-stat-label">' + (currentLang === 'en' ? 'Flows' : '流程') + '</span></div>';
-  html += '<div class="exc-stat-item"><span class="exc-stat-num">' + types + '</span><span class="exc-stat-label">' + t('exc.stat-types') + '</span></div>';
-  html += '<div class="exc-stat-item"><span class="exc-stat-num">' + domains + '</span><span class="exc-stat-label">' + t('exc.stat-domains') + '</span></div>';
+  html += '<div class="exc-stat-item"><span class="exc-stat-num">' + colCount + '</span><span class="exc-stat-label">' + t('exc.stat-types') + '</span></div>';
+  html += '<div class="exc-stat-item"><span class="exc-stat-num">' + l2Count + '</span><span class="exc-stat-label">' + t('exc.stat-domains') + '</span></div>';
 
-  // Priority breakdown
-  const priCounts = {};
-  excState.details.forEach(d => { priCounts[d._priority] = (priCounts[d._priority] || 0) + 1; });
+  // Add button
   html += '<div class="exc-stat-pri">';
-  ['P0', 'P1', 'P2', 'P3'].forEach(p => {
-    const cnt = priCounts[p] || 0;
-    if (cnt > 0) {
-      html += '<span class="exc-stat-pri-chip exc-pri-' + p + '">' + p + ' <b>' + cnt + '</b></span>';
-    }
-  });
+  html += '<button class="exc-add-btn" id="exc-add-btn">' + t('exc.add-btn') + '</button>';
   html += '</div>';
 
   el.innerHTML = html;
@@ -181,14 +183,15 @@ function excBuildMatrix() {
   const loading = document.getElementById('exc-matrix-loading');
   if (loading) loading.remove();
 
+  const columns = excState.columns;
+  const l2Groups = excState.l2Groups;
   const domains = excState.matrix.map(g => g.column);
-  const types = excState.types;
 
   let html = '';
   html += '<div class="exc-matrix-table-wrap">';
   html += '<table class="exc-matrix-table">';
 
-  // ===== THEAD: 4 layers =====
+  // ===== THEAD =====
   html += '<thead>';
 
   // L1: Domain group headers
@@ -198,54 +201,52 @@ function excBuildMatrix() {
   html += '<span class="exc-corner-app">' + t('exc.matrix-app') + '</span>';
   html += '<span class="exc-corner-flow">' + (currentLang === 'en' ? 'Flow' : '流程') + '</span>';
   html += '</div></th>';
+  // Build L1 colspan from l2Groups
+  const l1Spans = {};
+  l2Groups.forEach(g => {
+    if (!l1Spans[g.l1_name]) l1Spans[g.l1_name] = 0;
+    l1Spans[g.l1_name] += (g.colEnd - g.colStart + 1);
+  });
   let colOffset = 0;
   domains.forEach((domain, di) => {
-    const count = (excState.domainTypes[domain] || []).length;
-    html += '<th class="exc-domain-header exc-domain-' + di + '" colspan="' + count + '" data-col-start="' + colOffset + '" data-col-end="' + (colOffset + count - 1) + '">';
+    const span = l1Spans[domain] || 1;
+    html += '<th class="exc-domain-header exc-domain-' + di + '" colspan="' + span + '" data-col-start="' + colOffset + '" data-col-end="' + (colOffset + span - 1) + '">';
     html += '<span class="exc-domain-name">' + escHtml(domain) + '</span>';
     html += '</th>';
-    colOffset += count;
+    colOffset += span;
   });
   html += '</tr>';
 
-  // L2: Exception type names
+  // L2: Type names with colspan
   html += '<tr class="exc-matrix-hr exc-matrix-hr-l2">';
   html += '<th class="exc-hdr-spacer exc-domain-0" colspan="2"></th>';
-  types.forEach((type, ti) => {
-    const di = domains.indexOf(excState.typeDomain[type]);
-    html += '<th class="exc-type-header exc-domain-' + di + '" data-col="' + ti + '">';
-    html += '<span class="exc-type-name">' + escHtml(type) + '</span>';
+  l2Groups.forEach(g => {
+    const span = g.colEnd - g.colStart + 1;
+    const di = domains.indexOf(g.l1_name);
+    html += '<th class="exc-type-header exc-domain-' + di + '" colspan="' + span + '" data-col-start="' + g.colStart + '" data-col-end="' + g.colEnd + '">';
+    html += '<span class="exc-type-name">' + escHtml(g.name) + '</span>';
     html += '</th>';
   });
   html += '</tr>';
 
-  // L3: Fault descriptions from hierarchy
+  // L3: Column names (one per column)
   html += '<tr class="exc-matrix-hr exc-matrix-hr-l3">';
   html += '<th class="exc-hdr-spacer exc-domain-0" colspan="2"></th>';
-  types.forEach((type, ti) => {
-    const di = domains.indexOf(excState.typeDomain[type]);
-    const l3Items = excState.typeL3[type] || [];
-    html += '<th class="exc-desc-header exc-domain-' + di + '" data-col="' + ti + '">';
-    if (l3Items.length > 0) {
-      html += '<div class="exc-l3-list">';
-      l3Items.forEach(item => {
-        html += '<span class="exc-l3-item" title="' + escHtml(item.description) + '">' + escHtml(item.name) + '</span>';
-      });
-      html += '</div>';
-    } else {
-      html += '<span class="exc-desc-text">' + escHtml(excState.typeDesc[type]) + '</span>';
-    }
+  columns.forEach(col => {
+    const di = domains.indexOf(col.l1_name);
+    html += '<th class="exc-desc-header exc-domain-' + di + '" data-col="' + col.ci + '">';
+    html += '<span class="exc-l3-name">' + escHtml(col.name) + '</span>';
     html += '</th>';
   });
   html += '</tr>';
 
-  // L4: Examples
+  // L4: Examples (one per column)
   html += '<tr class="exc-matrix-hr exc-matrix-hr-l4">';
   html += '<th class="exc-hdr-spacer exc-domain-0" colspan="2"></th>';
-  types.forEach((type, ti) => {
-    const di = domains.indexOf(excState.typeDomain[type]);
-    html += '<th class="exc-example-header exc-domain-' + di + '" data-col="' + ti + '">';
-    html += '<span class="exc-example-text">' + escHtml(excState.typeExample[type]) + '</span>';
+  columns.forEach(col => {
+    const di = domains.indexOf(col.l1_name);
+    html += '<th class="exc-example-header exc-domain-' + di + '" data-col="' + col.ci + '">';
+    html += '<span class="exc-example-text">' + escHtml(col.example) + '</span>';
     html += '</th>';
   });
   html += '</tr>';
@@ -264,10 +265,9 @@ function excBuildMatrix() {
       html += '<span class="exc-app-name">' + escHtml(row.name) + '</span>';
       html += '<span class="exc-app-count">' + appTotal + '</span>';
       html += '</div></td>';
-      // Fill remaining columns
-      for (let ti = 0; ti < types.length; ti++) {
-        const di = domains.indexOf(excState.typeDomain[types[ti]]);
-        html += '<td class="exc-app-fill exc-domain-' + di + '" data-col="' + ti + '" data-row="' + row.ri + '"></td>';
+      for (let ci = 0; ci < columns.length; ci++) {
+        const di = domains.indexOf(columns[ci].l1_name);
+        html += '<td class="exc-app-fill exc-domain-' + di + '" data-col="' + ci + '" data-row="' + row.ri + '"></td>';
       }
       html += '</tr>';
     } else {
@@ -277,16 +277,16 @@ function excBuildMatrix() {
       html += '<span class="exc-flow-name">' + escHtml(row.name) + '</span>';
       html += '</td>';
 
-      // Data cells
-      types.forEach((type, ti) => {
-        const di = domains.indexOf(excState.typeDomain[type]);
-        const key = row.app + '||' + row.name + '||' + type;
+      // Data cells — one per L3 column
+      columns.forEach(col => {
+        const di = domains.indexOf(col.l1_name);
+        const key = row.app + '||' + row.name + '||' + col.name;
         const cell = excState.cellData[key];
 
         html += '<td class="exc-cell exc-domain-' + di + '"' +
-          ' data-col="' + ti + '"' +
+          ' data-col="' + col.ci + '"' +
           ' data-row="' + row.ri + '"' +
-          ' data-key="' + key + '"' +
+          ' data-key="' + escHtml(key) + '"' +
           ' data-has="' + (cell ? '1' : '0') + '">';
 
         if (cell) {
@@ -314,7 +314,7 @@ function excBuildMatrix() {
   html += '</table>';
   html += '</div>';
 
-  // Legend — priority colors
+  // Legend
   html += '<div class="exc-matrix-legend">';
   html += '<span class="exc-matrix-legend-label">' + t('exc.matrix-legend') + ':</span>';
   html += '<span class="exc-matrix-legend-scale">';
@@ -341,9 +341,18 @@ function excBuildMatrix() {
     });
   });
 
-  // L2-L4 Column header click → select single column
+  // L2 Type header click → select all columns in L2 group
+  wrap.querySelectorAll('.exc-type-header[data-col-start]').forEach(el => {
+    el.addEventListener('click', () => {
+      const start = parseInt(el.dataset.colStart, 10);
+      const end = parseInt(el.dataset.colEnd, 10);
+      excToggleDomainCols(start, end);
+    });
+  });
+
+  // L3/L4 Column header click → select single column
   wrap.querySelectorAll('[data-col]').forEach(el => {
-    if (el.classList.contains('exc-domain-header')) return;
+    if (el.classList.contains('exc-domain-header') || el.classList.contains('exc-type-header')) return;
     if (el.closest('tbody') && !el.classList.contains('exc-app-fill') && !el.classList.contains('exc-cell')) return;
     el.addEventListener('click', (e) => {
       if (e.target.closest('.exc-cell-block') || e.target.closest('.exc-cell-empty')) return;
@@ -361,10 +370,9 @@ function excBuildMatrix() {
     });
   });
 
-  // Row header click → select row (only on <tr> to avoid double-toggle from <td> bubbling)
+  // Row header click → select row
   wrap.querySelectorAll('tr[data-row]').forEach(el => {
     el.addEventListener('click', (e) => {
-      // Don't trigger row select when clicking data cells
       if (e.target.closest('.exc-cell') || e.target.closest('.exc-app-fill')) return;
       const ri = parseInt(el.dataset.row, 10);
       if (!isNaN(ri)) excToggleRow(ri);
@@ -408,19 +416,17 @@ function excApplySelection() {
   const cols = excState.selectedCols;
   const sr = excState.selectedRow;
 
-  // Clear all
   wrap.querySelectorAll('.col-selected').forEach(el => el.classList.remove('col-selected'));
   wrap.querySelectorAll('.row-selected').forEach(el => el.classList.remove('row-selected'));
   wrap.querySelectorAll('.cross-selected').forEach(el => el.classList.remove('cross-selected'));
 
-  // Highlight selected columns
   cols.forEach(ci => {
     wrap.querySelectorAll('[data-col="' + ci + '"]').forEach(el => el.classList.add('col-selected'));
   });
 
-  // Highlight domain headers that cover selected columns
+  // Highlight L1/L2 headers that cover selected columns
   if (cols.size > 0) {
-    wrap.querySelectorAll('.exc-domain-header[data-col-start]').forEach(el => {
+    wrap.querySelectorAll('[data-col-start]').forEach(el => {
       const start = parseInt(el.dataset.colStart, 10);
       const end = parseInt(el.dataset.colEnd, 10);
       let overlap = false;
@@ -431,12 +437,10 @@ function excApplySelection() {
     });
   }
 
-  // Highlight selected row
   if (sr >= 0) {
     wrap.querySelectorAll('[data-row="' + sr + '"]').forEach(el => el.classList.add('row-selected'));
   }
 
-  // Cross highlight (row × column intersection)
   if (cols.size > 0 && sr >= 0) {
     cols.forEach(ci => {
       wrap.querySelectorAll('[data-col="' + ci + '"][data-row="' + sr + '"]').forEach(el => {
@@ -456,18 +460,17 @@ function excOpenCellModal(key) {
   const body = document.getElementById('exc-modal-body');
   const title = document.getElementById('exc-modal-title-text');
 
-  // Parse key: app||flow||category
+  // Parse key: app||flow||l3_name
   const parts = key.split('||');
   const app = parts[0];
   const flow = parts[1];
-  const cat = parts[2];
+  const l3Name = parts[2];
 
-  if (title) title.textContent = cat;
+  if (title) title.textContent = l3Name;
 
   let html = '';
   const entries = cell.entries;
 
-  // Header context bar
   html += '<div class="exc-modal-ctx">';
   html += '<span class="exc-modal-ctx-tag">' + escHtml(app) + '</span>';
   html += '<span class="exc-modal-ctx-sep">/</span>';
@@ -475,7 +478,6 @@ function excOpenCellModal(key) {
   html += '<span class="exc-modal-ctx-count">' + entries.length + ' ' + t('exc.modal-descriptions') + ' · ' + entries.reduce((s, e) => s + (e.questions ? e.questions.length : 0), 0) + ' ' + t('exc.modal-scenarios') + '</span>';
   html += '</div>';
 
-  // Entry cards
   entries.forEach((entry, idx) => {
     const pri = entry._priority || '';
     const questions = entry.questions || [];
@@ -493,7 +495,7 @@ function excOpenCellModal(key) {
         html += '<div class="exc-q-item">';
         html += '<span class="exc-q-num">' + (qi + 1) + '</span>';
         html += '<span class="exc-q-text">' + escHtml(q) + '</span>';
-        html += '<button class="exc-q-copy" data-q="' + escHtml(q) + '" title="' + t('exc.copy') + '">📋</button>';
+        html += '<button class="exc-q-copy" data-q-enc="' + encodeURIComponent(q) + '" title="' + t('exc.copy') + '">📋</button>';
         html += '</div>';
       });
       html += '</div>';
@@ -519,7 +521,6 @@ function escHtml(str) {
 
 /* ===== Event Bindings ===== */
 
-// Modal close
 document.getElementById('exc-modal-close').addEventListener('click', excCloseModal);
 document.getElementById('exc-modal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) excCloseModal();
@@ -533,11 +534,10 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// Copy button inside modal
 document.getElementById('exc-modal-body').addEventListener('click', async (e) => {
   const btn = e.target.closest('.exc-q-copy');
   if (!btn) return;
-  const text = btn.dataset.q;
+  const text = decodeURIComponent(btn.dataset.qEnc || '');
   try {
     await navigator.clipboard.writeText(text);
     btn.textContent = '✓';
@@ -549,7 +549,294 @@ document.getElementById('exc-modal-body').addEventListener('click', async (e) =>
   }
 });
 
-// Language change
+/* ===== Add Scenario Modal ===== */
+
+let excAddClassifyResult = null;
+
+async function excOpenAddModal() {
+  // Check LLM config first
+  try {
+    const res = await fetch('/api/user/config');
+    const cfg = await res.json();
+    if (!cfg.llm_api_url || !cfg.llm_api_key) {
+      alert(t('exc.add-no-llm'));
+      return;
+    }
+  } catch {
+    alert(t('exc.add-no-llm'));
+    return;
+  }
+  const modal = document.getElementById('exc-add-modal');
+  modal.classList.remove('is-hidden');
+  // Reset to step 1
+  document.getElementById('exc-add-step1').classList.remove('is-hidden');
+  document.getElementById('exc-add-step2').classList.add('is-hidden');
+  document.getElementById('exc-add-step3').classList.add('is-hidden');
+  document.getElementById('exc-add-input').value = '';
+  document.getElementById('exc-add-ai-btn').disabled = false;
+  excAddClassifyResult = null;
+}
+
+function excCloseAddModal() {
+  document.getElementById('exc-add-modal').classList.add('is-hidden');
+}
+
+document.getElementById('exc-add-close').addEventListener('click', excCloseAddModal);
+document.getElementById('exc-add-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) excCloseAddModal();
+});
+
+// AI Classify button
+document.getElementById('exc-add-ai-btn').addEventListener('click', async () => {
+  const input = document.getElementById('exc-add-input').value.trim();
+  if (!input) return;
+
+  const btn = document.getElementById('exc-add-ai-btn');
+  btn.disabled = true;
+
+  // Show loading
+  document.getElementById('exc-add-step1').classList.add('is-hidden');
+  document.getElementById('exc-add-step2').classList.remove('is-hidden');
+
+  try {
+    const res = await fetch('/api/llm/classify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: input }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      throw new Error(data.message || 'classify failed');
+    }
+    excAddClassifyResult = data;
+    excPopulateAddForm(data);
+    // Show step 3
+    document.getElementById('exc-add-step2').classList.add('is-hidden');
+    document.getElementById('exc-add-step3').classList.remove('is-hidden');
+  } catch (err) {
+    document.getElementById('exc-add-step2').classList.add('is-hidden');
+    document.getElementById('exc-add-step1').classList.remove('is-hidden');
+    btn.disabled = false;
+    alert(t('exc.add-error') + ': ' + err.message);
+  }
+});
+
+function excPopulateAddForm(data) {
+  // Populate app dropdown
+  const appSel = document.getElementById('exc-add-app');
+  appSel.innerHTML = '';
+  excState.appNames.forEach(name => {
+    appSel.innerHTML += '<option value="' + escHtml(name) + '">' + escHtml(name) + '</option>';
+  });
+  appSel.innerHTML += '<option value="__new__">' + t('exc.add-new-app') + '</option>';
+  appSel.value = data.app || excState.appNames[0] || '';
+  excHandleAppChange();
+
+  // Populate flow dropdown
+  excUpdateFlowOptions(data.app);
+  document.getElementById('exc-add-flow').value = data.flow || '';
+
+  // Populate L2 dropdown
+  const l2Sel = document.getElementById('exc-add-l2');
+  l2Sel.innerHTML = '';
+  excState.l2Groups.forEach(g => {
+    l2Sel.innerHTML += '<option value="' + escHtml(g.name) + '" data-l1="' + escHtml(g.l1_name) + '">' + escHtml(g.name) + ' (' + escHtml(g.l1_name) + ')</option>';
+  });
+  l2Sel.innerHTML += '<option value="__new__">' + t('exc.add-new-l2') + '</option>';
+  // If AI returned an L2 not in the list, select "new" and pre-fill
+  const existingL2Names = excState.l2Groups.map(g => g.name);
+  if (data.l2_category && !existingL2Names.includes(data.l2_category)) {
+    l2Sel.value = '__new__';
+    document.getElementById('exc-add-new-l2').classList.remove('is-hidden');
+    document.getElementById('exc-add-new-l2').value = data.l2_category;
+  } else {
+    l2Sel.value = data.l2_category || '';
+    document.getElementById('exc-add-new-l2').classList.add('is-hidden');
+  }
+
+  // Populate L3 dropdown for the selected L2
+  excUpdateL3Options(data.l2_category);
+  // Check if L3 exists in current columns
+  const existingL3Names = excState.columns.map(c => c.name);
+  const l3Label = document.querySelector('[data-i18n="exc.add-l3"]');
+  const oldBadge = l3Label ? l3Label.querySelector('.exc-add-new-badge') : null;
+  if (oldBadge) oldBadge.remove();
+  if (data.l3_name && !existingL3Names.includes(data.l3_name)) {
+    // New L3 — select __new__ and pre-fill
+    document.getElementById('exc-add-l3').value = '__new__';
+    const newL3Input = document.getElementById('exc-add-new-l3');
+    newL3Input.classList.remove('is-hidden');
+    newL3Input.value = data.l3_name;
+    // Add "new" badge next to label
+    if (l3Label) {
+      const badge = document.createElement('span');
+      badge.className = 'exc-add-new-badge';
+      badge.textContent = 'new';
+      l3Label.appendChild(badge);
+    }
+  } else {
+    document.getElementById('exc-add-l3').value = data.l3_name || '';
+    document.getElementById('exc-add-new-l3').classList.add('is-hidden');
+  }
+
+  // Set description
+  document.getElementById('exc-add-desc').value = data.description || document.getElementById('exc-add-input').value.trim();
+
+  // Pre-fill questions with user's original input
+  const userInput = document.getElementById('exc-add-input').value.trim();
+  if (userInput) {
+    document.getElementById('exc-add-questions').value = userInput;
+  }
+
+  // Set priority
+  document.getElementById('exc-add-pri').value = data.priority || 'P2';
+
+  // Check if app is generic-eligible
+  if (data.app && data.app !== '通用' && !excState.appNames.includes(data.app)) {
+    document.getElementById('exc-add-generic-prompt').classList.remove('is-hidden');
+    document.getElementById('exc-add-generic-prompt').dataset.newApp = data.app;
+  } else {
+    document.getElementById('exc-add-generic-prompt').classList.add('is-hidden');
+  }
+}
+
+function excHandleAppChange() {
+  const appSel = document.getElementById('exc-add-app');
+  const newAppInput = document.getElementById('exc-add-new-app');
+  if (appSel.value === '__new__') {
+    newAppInput.classList.remove('is-hidden');
+    newAppInput.value = excAddClassifyResult ? excAddClassifyResult.app : '';
+  } else {
+    newAppInput.classList.add('is-hidden');
+  }
+  excUpdateFlowOptions(appSel.value);
+}
+
+function excUpdateFlowOptions(appName) {
+  const flowSel = document.getElementById('exc-add-flow');
+  const newFlowInput = document.getElementById('exc-add-new-flow');
+  flowSel.innerHTML = '';
+  const flows = excState.appFlows[appName] || [];
+  flows.forEach(f => {
+    flowSel.innerHTML += '<option value="' + escHtml(f) + '">' + escHtml(f) + '</option>';
+  });
+  flowSel.innerHTML += '<option value="__new__">' + t('exc.add-new-flow') + '</option>';
+  // Show/hide new flow input
+  newFlowInput.classList.add('is-hidden');
+  flowSel.onchange = () => {
+    if (flowSel.value === '__new__') {
+      newFlowInput.classList.remove('is-hidden');
+      newFlowInput.value = excAddClassifyResult ? excAddClassifyResult.flow : '';
+    } else {
+      newFlowInput.classList.add('is-hidden');
+    }
+  };
+}
+
+function excUpdateL3Options(l2Name) {
+  const l3Sel = document.getElementById('exc-add-l3');
+  const newL3Input = document.getElementById('exc-add-new-l3');
+  l3Sel.innerHTML = '';
+  excState.columns.forEach(col => {
+    if (col.l2_name === l2Name) {
+      l3Sel.innerHTML += '<option value="' + escHtml(col.name) + '">' + escHtml(col.name) + '</option>';
+    }
+  });
+  l3Sel.innerHTML += '<option value="__new__">' + t('exc.add-new-l3') + '...</option>';
+  l3Sel.onchange = () => {
+    if (l3Sel.value === '__new__') {
+      newL3Input.classList.remove('is-hidden');
+    } else {
+      newL3Input.classList.add('is-hidden');
+    }
+  };
+}
+
+// App change handler
+document.getElementById('exc-add-app').addEventListener('change', excHandleAppChange);
+
+// L2 change handler
+document.getElementById('exc-add-l2').addEventListener('change', () => {
+  const l2Sel = document.getElementById('exc-add-l2');
+  const newL2Input = document.getElementById('exc-add-new-l2');
+  if (l2Sel.value === '__new__') {
+    newL2Input.classList.remove('is-hidden');
+  } else {
+    newL2Input.classList.add('is-hidden');
+  }
+  excUpdateL3Options(l2Sel.value === '__new__' ? '' : l2Sel.value);
+  // Remove "new" badge from L3 label
+  const l3Label = document.querySelector('[data-i18n="exc.add-l3"]');
+  const badge = l3Label ? l3Label.querySelector('.exc-add-new-badge') : null;
+  if (badge) badge.remove();
+});
+
+// Generic app choice
+document.getElementById('exc-add-use-generic').addEventListener('click', () => {
+  document.getElementById('exc-add-app').value = '通用';
+  excHandleAppChange();
+  document.getElementById('exc-add-generic-prompt').classList.add('is-hidden');
+});
+document.getElementById('exc-add-create-new-app').addEventListener('click', () => {
+  document.getElementById('exc-add-app').value = '__new__';
+  excHandleAppChange();
+  const newAppInput = document.getElementById('exc-add-new-app');
+  newAppInput.value = document.getElementById('exc-add-generic-prompt').dataset.newApp || '';
+  document.getElementById('exc-add-generic-prompt').classList.add('is-hidden');
+});
+
+// Confirm insert
+document.getElementById('exc-add-confirm').addEventListener('click', async () => {
+  const btn = document.getElementById('exc-add-confirm');
+  btn.disabled = true;
+
+  const appSel = document.getElementById('exc-add-app');
+  const app = appSel.value === '__new__' ? document.getElementById('exc-add-new-app').value.trim() : appSel.value;
+  const flowSel = document.getElementById('exc-add-flow');
+  const flow = flowSel.value === '__new__' ? document.getElementById('exc-add-new-flow').value.trim() : flowSel.value;
+  const l2Sel = document.getElementById('exc-add-l2');
+  const l2_name = l2Sel.value === '__new__' ? document.getElementById('exc-add-new-l2').value.trim() : l2Sel.value;
+  const l1_name = l2Sel.value === '__new__'
+    ? (excAddClassifyResult ? excAddClassifyResult.l1_name || '' : '')
+    : (l2Sel.options[l2Sel.selectedIndex]?.dataset.l1 || '');
+  const l3Sel = document.getElementById('exc-add-l3');
+  const l3_name = l3Sel.value === '__new__' ? document.getElementById('exc-add-new-l3').value.trim() : l3Sel.value;
+  const description = document.getElementById('exc-add-desc').value.trim();
+  const priority = document.getElementById('exc-add-pri').value;
+  const questionsRaw = document.getElementById('exc-add-questions').value.trim();
+  const questions = questionsRaw ? questionsRaw.split('\n').map(s => s.trim()).filter(Boolean) : [];
+
+  if (!app || !flow || !l2_name || !l3_name || !description) {
+    btn.disabled = false;
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/issues/insert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        description, app, flow, l2_name, l3_name, l1_name, priority,
+        questions,
+        new_app_category: appSel.value === '__new__' ? app : null,
+        new_flow: flowSel.value === '__new__' ? flow : null,
+        new_l2: l2Sel.value === '__new__' ? l2_name : null,
+      }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      excCloseAddModal();
+      await excLoadAll();
+    } else {
+      alert(data.message || 'insert failed');
+    }
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 document.addEventListener('langchange', () => {
   if (excCache.loaded) excBuild();
 });

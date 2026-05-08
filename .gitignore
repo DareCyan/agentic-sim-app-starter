@@ -22,3 +22,11 @@ tmp/
 apps/**/logs/
 apps/**/output/
 apps/**/state/
+
+# Claude
+.claude/
+
+# Database
+*.db
+*.db-shm
+*.db-wal

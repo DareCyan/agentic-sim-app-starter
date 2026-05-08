@@ -20,6 +20,7 @@
           <button class="lang-btn is-active" data-lang="zh">中</button>
           <button class="lang-btn" data-lang="en">EN</button>
         </div>
+        <button class="settings-btn" id="settings-btn" title="Settings">⚙</button>
       </nav>
 
       <!-- Tab content panes -->
@@ -305,6 +306,42 @@
       </div>
     </main>
 
+    <!-- Config Modal -->
+    <div id="config-modal" class="config-modal-overlay is-hidden">
+      <div class="config-modal-box">
+        <div class="config-modal-header">
+          <span class="config-modal-title" data-i18n="config.title">大模型配置</span>
+          <button class="config-modal-close" id="config-modal-close">&times;</button>
+        </div>
+        <div class="config-modal-body">
+          <div class="config-field">
+            <label data-i18n="config.api-url">API 地址</label>
+            <div class="config-input-wrap">
+              <input type="text" id="cfg-api-url" data-i18n-placeholder="config.api-url-ph" placeholder="https://api.openai.com/v1" />
+              <span class="config-status" id="cfg-api-url-status"></span>
+            </div>
+          </div>
+          <div class="config-field">
+            <label data-i18n="config.api-key">API 密钥</label>
+            <div class="config-input-wrap">
+              <input type="text" id="cfg-api-key" data-i18n-placeholder="config.api-key-ph" placeholder="sk-..." autocomplete="off" />
+              <span class="config-status" id="cfg-api-key-status"></span>
+            </div>
+          </div>
+          <div class="config-field">
+            <label data-i18n="config.model">模型</label>
+            <div class="config-input-wrap">
+              <input type="text" id="cfg-model" data-i18n-placeholder="config.model-ph" placeholder="gpt-4o" />
+              <span class="config-status" id="cfg-model-status"></span>
+            </div>
+          </div>
+        </div>
+        <div class="config-modal-footer">
+          <button class="config-save-btn" id="config-save-btn" data-i18n="config.save">保存</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Questions Modal -->
     <div id="exc-modal" class="exc-modal-overlay is-hidden">
       <div class="exc-modal-box">
@@ -316,11 +353,88 @@
       </div>
     </div>
 
+    <!-- Add Scenario Modal -->
+    <div id="exc-add-modal" class="exc-modal-overlay is-hidden">
+      <div class="exc-modal-box exc-add-modal-box">
+        <div class="exc-modal-header">
+          <span data-i18n="exc.add-title">新增异常场景</span>
+          <button class="exc-modal-close" id="exc-add-close">&times;</button>
+        </div>
+        <div class="exc-modal-body" id="exc-add-body">
+          <!-- Step 1: Input -->
+          <div id="exc-add-step1" class="exc-add-step">
+            <textarea id="exc-add-input" class="exc-add-textarea" data-i18n-placeholder="exc.add-placeholder" placeholder="描述一个异常场景..."></textarea>
+            <button class="exc-add-ai-btn" id="exc-add-ai-btn" data-i18n="exc.add-ai-btn">AI 识别</button>
+          </div>
+          <!-- Step 2: Loading -->
+          <div id="exc-add-step2" class="exc-add-step exc-add-loading is-hidden">
+            <div class="exc-add-spinner"></div>
+            <span data-i18n="exc.add-classifying">AI 识别中...</span>
+          </div>
+          <!-- Step 3: Result form -->
+          <div id="exc-add-step3" class="exc-add-step is-hidden">
+            <div class="exc-add-result-header" data-i18n="exc.add-result">AI 识别结果</div>
+            <div class="exc-add-form">
+              <div class="exc-add-field">
+                <label data-i18n="exc.add-app">应用</label>
+                <select id="exc-add-app"></select>
+                <input type="text" id="exc-add-new-app" class="is-hidden" data-i18n-placeholder="exc.add-new-app-ph" placeholder="新应用分类名称" />
+              </div>
+              <div class="exc-add-field">
+                <label data-i18n="exc.add-flow">流程</label>
+                <select id="exc-add-flow"></select>
+                <input type="text" id="exc-add-new-flow" class="is-hidden" data-i18n-placeholder="exc.add-new-flow-ph" placeholder="新流程名称" />
+              </div>
+              <div class="exc-add-field">
+                <label data-i18n="exc.add-category">故障分类 (L2)</label>
+                <select id="exc-add-l2"></select>
+                <input type="text" id="exc-add-new-l2" class="is-hidden" data-i18n-placeholder="exc.add-new-l2-ph" placeholder="新故障分类名称" />
+              </div>
+              <div class="exc-add-field">
+                <label data-i18n="exc.add-l3">故障类型 (L3)</label>
+                <select id="exc-add-l3"></select>
+                <input type="text" id="exc-add-new-l3" class="is-hidden" data-i18n-placeholder="exc.add-new-l3-ph" placeholder="新故障类型名称" />
+              </div>
+              <div class="exc-add-field">
+                <label data-i18n="exc.add-desc">故障描述</label>
+                <textarea id="exc-add-desc" class="exc-add-desc-textarea"></textarea>
+              </div>
+              <div class="exc-add-field">
+                <label data-i18n="exc.add-pri">优先级</label>
+                <select id="exc-add-pri">
+                  <option value="P0">P0</option>
+                  <option value="P1">P1</option>
+                  <option value="P2" selected>P2</option>
+                  <option value="P3">P3</option>
+                </select>
+              </div>
+              <div class="exc-add-field">
+                <label data-i18n="exc.add-questions">示例场景</label>
+                <textarea id="exc-add-questions" class="exc-add-desc-textarea" data-i18n-placeholder="exc.add-questions-ph" placeholder="每行一个示例场景，例如：&#10;用户打开微信后页面白屏&#10;点击发送按钮无响应"></textarea>
+              </div>
+            </div>
+            <!-- Generic app choice prompt -->
+            <div id="exc-add-generic-prompt" class="exc-add-generic-prompt is-hidden">
+              <div class="exc-add-generic-hint" data-i18n="exc.add-generic-hint">此应用可归属"通用"分类，或创建新的专属分类</div>
+              <div class="exc-add-generic-btns">
+                <button class="exc-add-btn-secondary" id="exc-add-use-generic" data-i18n="exc.add-use-generic">归属通用</button>
+                <button class="exc-add-btn-primary" id="exc-add-create-new-app" data-i18n="exc.add-create-new">创建新分类</button>
+              </div>
+            </div>
+            <div class="exc-add-actions">
+              <button class="exc-add-btn-confirm" id="exc-add-confirm" data-i18n="exc.add-confirm">确认添加</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="/lang.js"></script>
     <script src="/pipeline-core.js"></script>
     <script src="/workflow.js"></script>
     <script src="/exception.js"></script>
     <script src="/sim-build.js"></script>
+    <script src="/config.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>
