@@ -879,9 +879,15 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                         meta = json.loads(l2_meta) if l2_meta else {}
                     except (json.JSONDecodeError, TypeError):
                         meta = {"description": l2_meta or "", "example": ""}
+                    # L3 children of this L2
+                    l3_rows = db.execute(
+                        "SELECT id, name, description FROM fault_types WHERE level='L3' AND parent_id=? ORDER BY id",
+                        (l2_id,)).fetchall()
+                    l3_list = [{"id": r[0], "name": r[1], "description": r[2] or ""} for r in l3_rows]
                     types.append({"id": l2_id, "name": l2_name,
                                   "description": meta.get("description", ""),
-                                  "example": meta.get("example", "")})
+                                  "example": meta.get("example", ""),
+                                  "l3": l3_list})
                 matrix.append({"column": l1_name, "types": types})
             self._send_json(matrix)
             return

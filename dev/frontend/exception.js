@@ -81,12 +81,13 @@ function excDeriveData() {
     }
   });
 
-  // Types in CSV order, with domain/desc/example mapping
+  // Types in CSV order, with domain/desc/example/l3 mapping
   excState.types = [];
   excState.typeDomain = {};
   excState.domainTypes = {};
   excState.typeDesc = {};
   excState.typeExample = {};
+  excState.typeL3 = {};  // type name → [{id, name, description}]
 
   excState.matrix.forEach(group => {
     const domain = group.column;
@@ -97,6 +98,7 @@ function excDeriveData() {
       excState.domainTypes[domain].push(t.name);
       excState.typeDesc[t.name] = t.description || '';
       excState.typeExample[t.name] = t.example || '';
+      excState.typeL3[t.name] = t.l3 || [];
     });
   });
 
@@ -217,13 +219,22 @@ function excBuildMatrix() {
   });
   html += '</tr>';
 
-  // L3: Descriptions
+  // L3: Fault descriptions from hierarchy
   html += '<tr class="exc-matrix-hr exc-matrix-hr-l3">';
   html += '<th class="exc-hdr-spacer exc-domain-0" colspan="2"></th>';
   types.forEach((type, ti) => {
     const di = domains.indexOf(excState.typeDomain[type]);
+    const l3Items = excState.typeL3[type] || [];
     html += '<th class="exc-desc-header exc-domain-' + di + '" data-col="' + ti + '">';
-    html += '<span class="exc-desc-text">' + escHtml(excState.typeDesc[type]) + '</span>';
+    if (l3Items.length > 0) {
+      html += '<div class="exc-l3-list">';
+      l3Items.forEach(item => {
+        html += '<span class="exc-l3-item" title="' + escHtml(item.description) + '">' + escHtml(item.name) + '</span>';
+      });
+      html += '</div>';
+    } else {
+      html += '<span class="exc-desc-text">' + escHtml(excState.typeDesc[type]) + '</span>';
+    }
     html += '</th>';
   });
   html += '</tr>';
