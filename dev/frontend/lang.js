@@ -205,6 +205,12 @@ function setLang(lang) {
   if (!langDict[lang]) return;
   currentLang = lang;
   localStorage.setItem('lang', lang);
+  // Persist to backend
+  fetch('/api/user/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lang }),
+  }).catch(() => {});
   document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
 
   // Update data-i18n elements
@@ -236,5 +242,14 @@ document.querySelectorAll('.lang-btn').forEach(btn => {
   btn.addEventListener('click', () => setLang(btn.dataset.lang));
 });
 
-// Load saved language on init
-setLang(currentLang);
+// Load saved language on init (prefer backend, fallback to localStorage)
+fetch('/api/user/config', { cache: 'no-store' })
+  .then(r => r.json())
+  .then(cfg => {
+    if (cfg.lang && langDict[cfg.lang]) {
+      setLang(cfg.lang);
+    } else {
+      setLang(currentLang);
+    }
+  })
+  .catch(() => setLang(currentLang));

@@ -9,6 +9,7 @@ import os
 import re
 import signal
 import socket
+import sqlite3
 import tempfile
 import subprocess
 import threading
@@ -858,73 +859,42 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/issues/apps":
-            apps_path = self.server.repo_root / "dev" / "issues" / "app.csv"
-            if not apps_path.exists():
-                self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
-                return
-            with apps_path.open("r", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-            result = []
-            current_cat = ""
-            for row in rows:
-                val0 = row[0].strip() if row and row[0].strip() else ""
-                if val0:
-                    current_cat = val0
-                if len(row) > 1 and row[1].strip():
-                    result.append({"category": current_cat, "flow": row[1].strip()})
-            self._send_json(result)
+            rows = self.server.db.execute("SELECT category, flow FROM apps ORDER BY id").fetchall()
+            self._send_json([{"category": r[0], "flow": r[1]} for r in rows])
             return
 
         if parsed.path == "/api/issues/matrix":
-            matrix_path = self.server.repo_root / "dev" / "issues" / "issues.csv"
-            if not matrix_path.exists():
-                self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
-                return
-            with matrix_path.open("r", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-            if not rows:
-                self._send_json([], HTTPStatus.OK)
-                return
-            header = rows[0]
-            sub = rows[1] if len(rows) > 1 else []
-            desc = rows[2] if len(rows) > 2 else []
-            examples = rows[3] if len(rows) > 3 else []
-            col_indices = []
-            current_col = ""
-            col_start = None
-            for i, h in enumerate(header):
-                h_stripped = h.strip()
-                if h_stripped:
-                    if col_start is not None:
-                        col_indices.append((current_col, col_start, i))
-                    current_col = h_stripped
-                    col_start = i
-            if col_start is not None:
-                col_indices.append((current_col, col_start, len(header)))
-            matrix = []
-            for col_name, start, end in col_indices:
-                types = []
-                for i in range(start, end):
-                    if i < len(sub) and sub[i].strip():
-                        type_name = sub[i].strip()
-                        types.append({
-                            "name": type_name,
-                            "description": desc[i].strip() if i < len(desc) else "",
-                            "example": examples[i].strip() if i < len(examples) else "",
-                        })
-                matrix.append({"column": col_name, "types": types})
+            rows = self.server.db.execute("SELECT domain, type_name, description, example FROM fault_types ORDER BY id").fetchall()
+            # Group by domain (preserving insertion order)
+            domain_order: list[str] = []
+            domain_types: dict[str, list[dict]] = {}
+            for domain, type_name, desc, example in rows:
+                if domain not in domain_types:
+                    domain_order.append(domain)
+                    domain_types[domain] = []
+                domain_types[domain].append({"name": type_name, "description": desc or "", "example": example or ""})
+            matrix = [{"column": d, "types": domain_types[d]} for d in domain_order]
             self._send_json(matrix)
             return
 
         if parsed.path == "/api/issues/details":
-            details_path = self.server.repo_root / "dev" / "issues" / "issues.json"
-            if not details_path.exists():
-                self._send_json([], HTTPStatus.OK)
-                return
-            details = json.loads(details_path.read_text(encoding="utf-8"))
-            self._send_json(details)
+            rows = self.server.db.execute(
+                "SELECT app, flow, exception_column, exception_type, exception_category, exception_description, questions FROM fault_details ORDER BY id"
+            ).fetchall()
+            result = []
+            for app, flow, col, typ, cat, desc, questions_json in rows:
+                result.append({
+                    "app": app, "flow": flow,
+                    "exception_column": col or "", "exception_type": typ or "",
+                    "exception_category": cat or "", "exception_description": desc or "",
+                    "questions": json.loads(questions_json) if questions_json else [],
+                })
+            self._send_json(result)
+            return
+
+        if parsed.path == "/api/user/config":
+            rows = self.server.db.execute("SELECT key, value FROM user_config").fetchall()
+            self._send_json(dict(rows))
             return
 
         if parsed.path == "/api/sim-build/devices":
@@ -1077,6 +1047,33 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": ok})
             return
 
+        if parsed.path == "/api/user/config":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            for key, value in data.items():
+                self.server.db.execute(
+                    "INSERT OR REPLACE INTO user_config (key, value) VALUES (?, ?)", (str(key), str(value))
+                )
+            self.server.db.commit()
+            self._send_json({"ok": True})
+            return
+
+        if parsed.path == "/api/issues/seed":
+            self.server.db.executescript("""
+                DELETE FROM apps;
+                DELETE FROM fault_types;
+                DELETE FROM fault_details;
+            """)
+            self.server.db.commit()
+            self.server._seed_from_files()
+            self._send_json({"ok": True, "message": "reseeded"})
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -1111,6 +1108,99 @@ class ConsoleServer(ThreadingHTTPServer):
         self.sim_screen_png: bytes = b""
         self.sim_screen_resolution: tuple[int, int] = (0, 0)
         self.sim_screen_running = False
+        # SQLite database
+        self.db_path = repo_root / "dev" / "console.db"
+        self._init_db()
+
+    def _init_db(self) -> None:
+        self.db = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.executescript("""
+            CREATE TABLE IF NOT EXISTS apps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                flow TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS fault_types (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL,
+                type_name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                example TEXT
+            );
+            CREATE TABLE IF NOT EXISTS fault_details (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app TEXT NOT NULL,
+                flow TEXT NOT NULL,
+                exception_column TEXT,
+                exception_type TEXT,
+                exception_category TEXT,
+                exception_description TEXT,
+                questions TEXT
+            );
+            CREATE TABLE IF NOT EXISTS user_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+        """)
+        self.db.commit()
+        # Seed from files if tables are empty
+        count = self.db.execute("SELECT COUNT(*) FROM apps").fetchone()[0]
+        if count == 0:
+            self._seed_from_files()
+
+    def _seed_from_files(self) -> None:
+        issues_dir = self.repo_root / "dev" / "issues"
+        # Seed apps from app.csv
+        apps_path = issues_dir / "app.csv"
+        if apps_path.exists():
+            with apps_path.open("r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+            current_cat = ""
+            for row in rows:
+                val0 = row[0].strip() if row and row[0].strip() else ""
+                if val0:
+                    current_cat = val0
+                if len(row) > 1 and row[1].strip():
+                    self.db.execute("INSERT INTO apps (category, flow) VALUES (?, ?)", (current_cat, row[1].strip()))
+        # Seed fault_types from issues.csv
+        matrix_path = issues_dir / "issues.csv"
+        if matrix_path.exists():
+            with matrix_path.open("r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+            if rows:
+                header = rows[0]
+                sub = rows[1] if len(rows) > 1 else []
+                desc = rows[2] if len(rows) > 2 else []
+                examples = rows[3] if len(rows) > 3 else []
+                current_col = ""
+                for i, h in enumerate(header):
+                    h_stripped = h.strip()
+                    if h_stripped:
+                        current_col = h_stripped
+                    if i < len(sub) and sub[i].strip():
+                        self.db.execute(
+                            "INSERT OR IGNORE INTO fault_types (domain, type_name, description, example) VALUES (?, ?, ?, ?)",
+                            (current_col, sub[i].strip(),
+                             desc[i].strip() if i < len(desc) else "",
+                             examples[i].strip() if i < len(examples) else ""),
+                        )
+        # Seed fault_details from issues.json
+        details_path = issues_dir / "issues.json"
+        if details_path.exists():
+            details = json.loads(details_path.read_text(encoding="utf-8"))
+            for entry in details:
+                self.db.execute(
+                    "INSERT INTO fault_details (app, flow, exception_column, exception_type, exception_category, exception_description, questions) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (entry.get("app", ""), entry.get("flow", ""),
+                     entry.get("exception_column", ""), entry.get("exception_type", ""),
+                     entry.get("exception_category", ""), entry.get("exception_description", ""),
+                     json.dumps(entry.get("questions", []), ensure_ascii=False)),
+                )
+        self.db.commit()
+        self.logger.info("[db] Seeded database from files: %s", self.db_path)
 
 
 def start_inspection_thread(
