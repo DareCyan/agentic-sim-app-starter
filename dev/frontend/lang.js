@@ -96,7 +96,7 @@ const langDict = {
     'sim.key-home': '主页',
     'sim.key-recent': '最近任务',
     'config.title': '大模型配置',
-    'config.api-url': 'API 地址（OpenAI）',
+    'config.api-url': 'API 地址（OpenAI格式）',
     'config.api-url-ph': 'https://api.openai.com/v1',
     'config.api-key': 'API 密钥',
     'config.api-key-ph': 'sk-...',
