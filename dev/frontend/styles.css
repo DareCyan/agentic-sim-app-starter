@@ -2502,6 +2502,7 @@ p {
 /* App header row */
 .exc-app-row {
   transition: background 0.1s ease;
+  background: var(--panel);
 }
 
 .exc-app-cell {
@@ -2552,6 +2553,7 @@ p {
 /* Flow data row */
 .exc-flow-row {
   transition: background 0.15s ease;
+  background: var(--panel);
 }
 
 .exc-flow-row:hover {
