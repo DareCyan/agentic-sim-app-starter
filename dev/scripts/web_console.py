@@ -1290,6 +1290,308 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "message": "reseeded"})
             return
 
+        if parsed.path == "/api/llm/generalize":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            question = (data.get("question") or "").strip()
+            app = (data.get("app") or "").strip()
+            flow = (data.get("flow") or "").strip()
+            l3_name = (data.get("l3_name") or "").strip()
+            direction = (data.get("direction") or "").strip()
+
+            if not all([question, app, flow, l3_name, direction]):
+                self._send_json({"ok": False, "message": "missing required fields"})
+                return
+
+            # Read LLM config
+            cfg_rows = self.server.db.execute("SELECT key, value FROM user_config").fetchall()
+            cfg = dict(cfg_rows)
+            api_url = (cfg.get("llm_api_url") or "").rstrip("/")
+            api_key = cfg.get("llm_api_key") or ""
+            model = cfg.get("llm_model") or ""
+
+            if not api_url:
+                self._send_json({"ok": False, "message": "llm_api_url not configured"})
+                return
+
+            # Get target cells based on direction
+            db = self.server.db
+            if direction == "row":
+                # Same app+flow, all L3 types
+                l3_rows = db.execute(
+                    "SELECT l3.name FROM fault_types l3 WHERE l3.level='L3' ORDER BY l3.id"
+                ).fetchall()
+                target_l3s = [r[0] for r in l3_rows]
+                target_cells = [{"app": app, "flow": flow, "l3_name": l3} for l3 in target_l3s]
+            else:  # col
+                # Same L3, all app+flow combinations
+                cell_rows = db.execute(
+                    "SELECT DISTINCT s.app, s.flow FROM scenarios s JOIN fault_types ft ON s.fault_type_id=ft.id WHERE ft.name=?",
+                    (l3_name,)
+                ).fetchall()
+                target_cells = [{"app": r[0], "flow": r[1], "l3_name": l3_name} for r in cell_rows]
+                # Also include app+flow combinations from apps table that don't have this L3 yet
+                all_app_flows = db.execute("SELECT category, flow FROM apps ORDER BY id").fetchall()
+                existing_keys = {(c["app"], c["flow"]) for c in target_cells}
+                for cat, fl in all_app_flows:
+                    if (cat, fl) not in existing_keys:
+                        target_cells.append({"app": cat, "flow": fl, "l3_name": l3_name})
+
+            # Build prompt for LLM
+            prompt = (
+                "你是一个故障场景泛化助手。根据给定的示例场景，为每个目标单元格生成一个新的示例场景。\n\n"
+                f"示例场景: {question}\n"
+                f"来源: app={app}, flow={flow}, L3={l3_name}\n"
+                f"泛化方向: {'按行(同app+flow，不同L3)' if direction == 'row' else '按列(同L3，不同app+flow)'}\n\n"
+                "目标单元格:\n"
+            )
+            for i, cell in enumerate(target_cells):
+                prompt += f"{i+1}. app={cell['app']}, flow={cell['flow']}, L3={cell['l3_name']}\n"
+
+            prompt += (
+                "\n请为每个目标单元格生成一个新的示例场景。规则:\n"
+                "1. 生成的场景必须与目标单元格的app、flow、L3类型相关\n"
+                "2. 场景要具体、可测试\n"
+                "3. 如果某个单元格无法生成合适的场景(如app/flow与L3完全不相关)，标记为skip\n"
+                "4. 返回纯JSON数组，格式:\n"
+                '[{"app":"xxx","flow":"xxx","l3_name":"xxx","scenario":"生成的场景","skipped":false},...]\n'
+                "5. 只返回JSON，不要其他文字"
+            )
+
+            # Call LLM
+            import urllib.request
+            import urllib.error
+            chat_url = api_url.rstrip("/") + "/chat/completions"
+            payload = json.dumps({
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                chat_url, data=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            if api_key:
+                req.add_header("Authorization", f"Bearer {api_key}")
+
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    resp_data = json.loads(resp.read().decode("utf-8"))
+                    content = resp_data["choices"][0]["message"]["content"].strip()
+                    # Strip markdown code fences if present
+                    if content.startswith("```"):
+                        content = content.split("\n", 1)[1]
+                    if content.endswith("```"):
+                        content = content.rsplit("```", 1)[0]
+                    content = content.strip()
+                    results = json.loads(content)
+
+                    # For each result, check if scenario exists and get/generate description
+                    final_results = []
+                    for item in results:
+                        cell_app = item.get("app", "")
+                        cell_flow = item.get("flow", "")
+                        cell_l3 = item.get("l3_name", "")
+                        scenario = item.get("scenario", "")
+                        skipped = item.get("skipped", False)
+
+                        if skipped:
+                            final_results.append({
+                                "app": cell_app,
+                                "flow": cell_flow,
+                                "l3_name": cell_l3,
+                                "skipped": True,
+                                "is_new": False,
+                            })
+                            continue
+
+                        # Check if scenario already exists in this cell
+                        key = f"{cell_app}||{cell_flow}||{cell_l3}"
+                        # Check existing scenarios
+                        existing = db.execute(
+                            "SELECT s.description, s.questions FROM scenarios s "
+                            "JOIN fault_types ft ON s.fault_type_id=ft.id "
+                            "WHERE s.app=? AND s.flow=? AND ft.name=?",
+                            (cell_app, cell_flow, cell_l3)
+                        ).fetchone()
+
+                        if existing:
+                            # Use existing description
+                            existing_desc = existing[0]
+                            existing_questions = json.loads(existing[1]) if existing[1] else []
+                            if scenario and scenario not in existing_questions:
+                                # Add new scenario to existing
+                                final_results.append({
+                                    "app": cell_app,
+                                    "flow": cell_flow,
+                                    "l3_name": cell_l3,
+                                    "existing_description": existing_desc,
+                                    "new_scenario": scenario,
+                                    "skipped": False,
+                                    "is_new": False,
+                                    "add_to_existing": True,
+                                })
+                            else:
+                                # Scenario already exists
+                                final_results.append({
+                                    "app": cell_app,
+                                    "flow": cell_flow,
+                                    "l3_name": cell_l3,
+                                    "existing_description": existing_desc,
+                                    "skipped": False,
+                                    "is_new": False,
+                                    "add_to_existing": False,
+                                })
+                        else:
+                            # Need new description - call LLM again
+                            desc_prompt = (
+                                f"为以下故障场景生成一个故障描述:\n"
+                                f"App: {cell_app}\n"
+                                f"Flow: {cell_flow}\n"
+                                f"L3故障类型: {cell_l3}\n"
+                                f"示例场景: {scenario}\n\n"
+                                "请返回纯JSON:\n"
+                                '{"description":"[P2] 故障描述内容"}\n'
+                                "只返回JSON，不要其他文字"
+                            )
+                            try:
+                                desc_req = urllib.request.Request(
+                                    chat_url,
+                                    data=json.dumps({
+                                        "model": model,
+                                        "messages": [{"role": "user", "content": desc_prompt}],
+                                        "temperature": 0.1,
+                                    }).encode("utf-8"),
+                                    headers={"Content-Type": "application/json"}
+                                )
+                                if api_key:
+                                    desc_req.add_header("Authorization", f"Bearer {api_key}")
+                                with urllib.request.urlopen(desc_req, timeout=30) as desc_resp:
+                                    desc_resp_data = json.loads(desc_resp.read().decode("utf-8"))
+                                    desc_content = desc_resp_data["choices"][0]["message"]["content"].strip()
+                                    if desc_content.startswith("```"):
+                                        desc_content = desc_content.split("\n", 1)[1]
+                                    if desc_content.endswith("```"):
+                                        desc_content = desc_content.rsplit("```", 1)[0]
+                                    desc_result = json.loads(desc_content.strip())
+                                    new_desc = desc_result.get("description", "")
+                            except Exception:
+                                new_desc = f"[P2] {cell_app}在{cell_flow}流程中{cell_l3}故障"
+
+                            final_results.append({
+                                "app": cell_app,
+                                "flow": cell_flow,
+                                "l3_name": cell_l3,
+                                "new_description": new_desc,
+                                "new_scenario": scenario,
+                                "skipped": False,
+                                "is_new": True,
+                            })
+
+                    self._send_json({"ok": True, "results": final_results})
+            except urllib.error.HTTPError as e:
+                self._send_json({"ok": False, "message": f"LLM HTTP {e.code}: {e.reason}"})
+            except Exception as e:
+                self._send_json({"ok": False, "message": str(e)})
+            return
+
+        if parsed.path == "/api/issues/generalize-insert":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            results = data.get("results", [])
+            if not results:
+                self._send_json({"ok": False, "message": "no results to insert"})
+                return
+
+            db = self.server.db
+            inserted = 0
+            updated = 0
+
+            for item in results:
+                if item.get("skipped"):
+                    continue
+
+                cell_app = item.get("app", "")
+                cell_flow = item.get("flow", "")
+                cell_l3 = item.get("l3_name", "")
+                new_desc = item.get("new_description", "")
+                existing_desc = item.get("existing_description", "")
+                new_scenario = item.get("new_scenario", "")
+                add_to_existing = item.get("add_to_existing", False)
+                is_new = item.get("is_new", False)
+
+                if not cell_app or not cell_flow or not cell_l3:
+                    continue
+
+                # Get or create L3 fault type
+                l3_row = db.execute(
+                    "SELECT id FROM fault_types WHERE level='L3' AND name=?", (cell_l3,)
+                ).fetchone()
+                if l3_row:
+                    l3_id = l3_row[0]
+                else:
+                    # Find L2 parent - use first L2 as default
+                    l2_row = db.execute("SELECT id FROM fault_types WHERE level='L2' LIMIT 1").fetchone()
+                    if not l2_row:
+                        continue
+                    db.execute(
+                        "INSERT INTO fault_types (parent_id, level, name, description) VALUES (?, 'L3', ?, '')",
+                        (l2_row[0], cell_l3)
+                    )
+                    l3_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+                if add_to_existing and existing_desc and new_scenario:
+                    # Add scenario to existing description
+                    existing = db.execute(
+                        "SELECT id, questions FROM scenarios s "
+                        "JOIN fault_types ft ON s.fault_type_id=ft.id "
+                        "WHERE s.app=? AND s.flow=? AND ft.name=? AND s.description=?",
+                        (cell_app, cell_flow, cell_l3, existing_desc)
+                    ).fetchone()
+                    if existing:
+                        scenario_id = existing[0]
+                        questions = json.loads(existing[1]) if existing[1] else []
+                        if new_scenario not in questions:
+                            questions.append(new_scenario)
+                            db.execute(
+                                "UPDATE scenarios SET questions=? WHERE id=?",
+                                (json.dumps(questions, ensure_ascii=False), scenario_id)
+                            )
+                            updated += 1
+                elif is_new and new_desc and new_scenario:
+                    # Insert new scenario with new description
+                    # Check if app+flow exists
+                    app_row = db.execute(
+                        "SELECT id FROM apps WHERE category=? AND flow=?",
+                        (cell_app, cell_flow)
+                    ).fetchone()
+                    if not app_row:
+                        db.execute(
+                            "INSERT INTO apps (category, flow) VALUES (?, ?)",
+                            (cell_app, cell_flow)
+                        )
+
+                    db.execute(
+                        "INSERT INTO scenarios (app, flow, fault_type_id, priority, description, questions) "
+                        "VALUES (?, ?, ?, 'P2', ?, ?)",
+                        (cell_app, cell_flow, l3_id, new_desc, json.dumps([new_scenario], ensure_ascii=False))
+                    )
+                    inserted += 1
+
+            db.commit()
+            self._send_json({"ok": True, "inserted": inserted, "updated": updated})
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def log_message(self, format: str, *args: Any) -> None:

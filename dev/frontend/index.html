@@ -364,16 +364,15 @@
           <!-- Step 1: Input -->
           <div id="exc-add-step1" class="exc-add-step">
             <textarea id="exc-add-input" class="exc-add-textarea" data-i18n-placeholder="exc.add-placeholder" placeholder="描述一个异常场景..."></textarea>
-            <button class="exc-add-ai-btn" id="exc-add-ai-btn" data-i18n="exc.add-ai-btn">AI 识别</button>
+            <button class="exc-add-ai-btn" id="exc-add-ai-btn" data-i18n="exc.add-ai-btn">✦ 智能识别</button>
           </div>
           <!-- Step 2: Loading -->
           <div id="exc-add-step2" class="exc-add-step exc-add-loading is-hidden">
-            <div class="exc-add-spinner"></div>
-            <span data-i18n="exc.add-classifying">AI 识别中...</span>
+            <span id="exc-add-loading-text" class="exc-add-loading-text">✦ 智能识别中...</span>
           </div>
           <!-- Step 3: Result form -->
           <div id="exc-add-step3" class="exc-add-step is-hidden">
-            <div class="exc-add-result-header" data-i18n="exc.add-result">AI 识别结果</div>
+            <div class="exc-add-result-header" data-i18n="exc.add-result">✦ 智能识别结果</div>
             <div class="exc-add-form">
               <div class="exc-add-field">
                 <label data-i18n="exc.add-app">应用</label>
@@ -425,6 +424,48 @@
               <button class="exc-add-btn-confirm" id="exc-add-confirm" data-i18n="exc.add-confirm">确认添加</button>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generalize Modal - Choose Direction -->
+    <div id="exc-generalize-modal" class="exc-modal-overlay is-hidden">
+      <div class="exc-modal-box exc-generalize-modal-box">
+        <div class="exc-modal-header">
+          <span>选择泛化方向</span>
+          <button class="exc-modal-close" id="exc-generalize-close">&times;</button>
+        </div>
+        <div class="exc-modal-body exc-generalize-body">
+          <p class="exc-generalize-desc">基于示例场景 "<span id="exc-generalize-source"></span>"</p>
+          <div class="exc-generalize-options">
+            <button class="exc-generalize-option" id="exc-generalize-row">
+              <span class="exc-generalize-icon">↔</span>
+              <span class="exc-generalize-label">按行泛化</span>
+              <span class="exc-generalize-hint">生成同一流程下所有故障类型的场景</span>
+            </button>
+            <button class="exc-generalize-option" id="exc-generalize-col">
+              <span class="exc-generalize-icon">↕</span>
+              <span class="exc-generalize-label">按列泛化</span>
+              <span class="exc-generalize-hint">生成同一故障类型下所有流程的场景</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generalize Confirm Modal -->
+    <div id="exc-generalize-confirm-modal" class="exc-modal-overlay is-hidden">
+      <div class="exc-modal-box exc-generalize-confirm-box">
+        <div class="exc-modal-header">
+          <span>泛化结果确认</span>
+          <button class="exc-modal-close" id="exc-generalize-confirm-close">&times;</button>
+        </div>
+        <div class="exc-modal-body" id="exc-generalize-confirm-body">
+          <!-- Results will be inserted here -->
+        </div>
+        <div class="exc-generalize-confirm-footer">
+          <button class="exc-generalize-btn-cancel" id="exc-generalize-cancel">取消</button>
+          <button class="exc-generalize-btn-confirm" id="exc-generalize-confirm">确认插入</button>
         </div>
       </div>
     </div>

@@ -495,7 +495,8 @@ function excOpenCellModal(key) {
         html += '<div class="exc-q-item">';
         html += '<span class="exc-q-num">' + (qi + 1) + '</span>';
         html += '<span class="exc-q-text">' + escHtml(q) + '</span>';
-        html += '<button class="exc-q-copy" data-q-enc="' + encodeURIComponent(q) + '" title="' + t('exc.copy') + '">📋</button>';
+        html += '<button class="exc-q-copy" data-q-enc="' + encodeURIComponent(q) + '" title="' + t('exc.copy') + '">复制</button>';
+        html += '<button class="exc-q-generalize" data-q="' + escHtml(q) + '" data-app="' + escHtml(app) + '" data-flow="' + escHtml(flow) + '" data-l3="' + escHtml(l3Name) + '" title="泛化">泛化</button>';
         html += '</div>';
       });
       html += '</div>';
@@ -542,10 +543,198 @@ document.getElementById('exc-modal-body').addEventListener('click', async (e) =>
     await navigator.clipboard.writeText(text);
     btn.textContent = '✓';
     btn.classList.add('is-copied');
-    setTimeout(() => { btn.textContent = '📋'; btn.classList.remove('is-copied'); }, 1200);
+    setTimeout(() => { btn.textContent = '复制'; btn.classList.remove('is-copied'); }, 1200);
   } catch {
     btn.textContent = '!';
-    setTimeout(() => { btn.textContent = '📋'; }, 1200);
+    setTimeout(() => { btn.textContent = '复制'; }, 1200);
+  }
+});
+
+/* ===== Generalize Functionality ===== */
+
+let excGeneralizeData = null;
+
+// Handle generalize button click
+document.getElementById('exc-modal-body').addEventListener('click', (e) => {
+  const btn = e.target.closest('.exc-q-generalize');
+  if (!btn) return;
+
+  excGeneralizeData = {
+    question: btn.dataset.q,
+    app: btn.dataset.app,
+    flow: btn.dataset.flow,
+    l3: btn.dataset.l3,
+  };
+
+  // Close the original modal first
+  document.getElementById('exc-modal').classList.add('is-hidden');
+
+  // Show direction selection modal
+  document.getElementById('exc-generalize-source').textContent = btn.dataset.q;
+  document.getElementById('exc-generalize-modal').classList.remove('is-hidden');
+});
+
+// Close generalize modal
+document.getElementById('exc-generalize-close').addEventListener('click', () => {
+  document.getElementById('exc-generalize-modal').classList.add('is-hidden');
+});
+document.getElementById('exc-generalize-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) {
+    document.getElementById('exc-generalize-modal').classList.add('is-hidden');
+  }
+});
+
+// Row generalize
+document.getElementById('exc-generalize-row').addEventListener('click', () => {
+  document.getElementById('exc-generalize-modal').classList.add('is-hidden');
+  excStartGeneralize('row');
+});
+
+// Column generalize
+document.getElementById('exc-generalize-col').addEventListener('click', () => {
+  document.getElementById('exc-generalize-modal').classList.add('is-hidden');
+  excStartGeneralize('col');
+});
+
+// Start generalize process
+async function excStartGeneralize(direction) {
+  if (!excGeneralizeData) return;
+
+  // Open add-modal and show loading
+  document.getElementById('exc-add-modal').classList.remove('is-hidden');
+  document.getElementById('exc-add-step1').classList.add('is-hidden');
+  document.getElementById('exc-add-step2').classList.remove('is-hidden');
+  document.getElementById('exc-add-step3').classList.add('is-hidden');
+
+  // Update modal title for generalize
+  const modalTitle = document.querySelector('#exc-add-modal .exc-modal-header span');
+  const originalTitle = modalTitle.textContent;
+  modalTitle.textContent = '泛化中';
+
+  // Update loading text
+  const loadingText = document.getElementById('exc-add-loading-text');
+  loadingText.textContent = '✦ 泛化中...';
+
+  try {
+    const res = await fetch('/api/llm/generalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: excGeneralizeData.question,
+        app: excGeneralizeData.app,
+        flow: excGeneralizeData.flow,
+        l3_name: excGeneralizeData.l3,
+        direction: direction,
+      }),
+    });
+
+    const data = await res.json();
+    if (!data.ok) {
+      throw new Error(data.message || 'generalize failed');
+    }
+
+    // Hide loading, close add modal, show confirm
+    document.getElementById('exc-add-step2').classList.add('is-hidden');
+    document.getElementById('exc-add-modal').classList.add('is-hidden');
+    modalTitle.textContent = originalTitle;
+    excShowGeneralizeConfirm(data.results, direction);
+  } catch (err) {
+    document.getElementById('exc-add-step2').classList.add('is-hidden');
+    document.getElementById('exc-add-modal').classList.add('is-hidden');
+    modalTitle.textContent = originalTitle;
+    alert('泛化失败: ' + err.message);
+  }
+}
+
+// Show generalize confirm modal
+function excShowGeneralizeConfirm(results, direction) {
+  const body = document.getElementById('exc-generalize-confirm-body');
+  let html = '';
+
+  results.forEach((item, idx) => {
+    const isNew = item.is_new || false;
+    const skipped = item.skipped || false;
+
+    html += '<div class="exc-generalize-item">';
+    html += '<div class="exc-generalize-item-header">';
+    html += '<span class="exc-generalize-item-cell">' + escHtml(item.app) + ' / ' + escHtml(item.flow) + '</span>';
+    html += '<span class="exc-generalize-item-cell">' + escHtml(item.l3_name) + '</span>';
+    if (skipped) {
+      html += '<span class="exc-generalize-item-status skipped">跳过</span>';
+    } else if (isNew) {
+      html += '<span class="exc-generalize-item-status new">new</span>';
+    }
+    html += '</div>';
+
+    if (!skipped) {
+      if (item.new_description) {
+        html += '<div class="exc-generalize-item-content"><strong>新增故障描述:</strong> ' + escHtml(item.new_description) + '</div>';
+      }
+      if (item.existing_description) {
+        html += '<div class="exc-generalize-item-content"><strong>使用已有描述:</strong> ' + escHtml(item.existing_description) + '</div>';
+      }
+      if (item.new_scenario) {
+        html += '<div class="exc-generalize-item-scenario">' + escHtml(item.new_scenario) + '</div>';
+      }
+    } else {
+      html += '<div class="exc-generalize-item-content" style="color: var(--muted);">无法为此组合生成故障场景</div>';
+    }
+
+    html += '</div>';
+  });
+
+  body.innerHTML = html;
+  document.getElementById('exc-generalize-confirm-modal').classList.remove('is-hidden');
+
+  // Store results for confirmation
+  excGeneralizeData.results = results;
+}
+
+// Close confirm modal
+document.getElementById('exc-generalize-confirm-close').addEventListener('click', () => {
+  document.getElementById('exc-generalize-confirm-modal').classList.add('is-hidden');
+});
+document.getElementById('exc-generalize-confirm-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) {
+    document.getElementById('exc-generalize-confirm-modal').classList.add('is-hidden');
+  }
+});
+
+// Cancel generalize
+document.getElementById('exc-generalize-cancel').addEventListener('click', () => {
+  document.getElementById('exc-generalize-confirm-modal').classList.add('is-hidden');
+});
+
+// Confirm generalize insert
+document.getElementById('exc-generalize-confirm').addEventListener('click', async () => {
+  if (!excGeneralizeData || !excGeneralizeData.results) return;
+
+  const btn = document.getElementById('exc-generalize-confirm');
+  btn.disabled = true;
+  btn.textContent = '插入中...';
+
+  try {
+    const res = await fetch('/api/issues/generalize-insert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        results: excGeneralizeData.results,
+      }),
+    });
+
+    const data = await res.json();
+    if (!data.ok) {
+      throw new Error(data.message || 'insert failed');
+    }
+
+    // Close modal and refresh
+    document.getElementById('exc-generalize-confirm-modal').classList.add('is-hidden');
+    await excLoadAll();
+  } catch (err) {
+    alert('插入失败: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '确认插入';
   }
 });
 
@@ -598,6 +787,17 @@ document.getElementById('exc-add-ai-btn').addEventListener('click', async () => 
   document.getElementById('exc-add-step1').classList.add('is-hidden');
   document.getElementById('exc-add-step2').classList.remove('is-hidden');
 
+  // Start wave animation with random words
+  const loadingText = document.getElementById('exc-add-loading-text');
+  const words = currentLang === 'en'
+    ? ['Analyzing', 'Classifying', 'Understanding', 'Generating', 'Optimizing', 'Processing']
+    : ['分析中', '识别中', '分类中', '理解中', '生成中', '优化中'];
+  let wordIndex = 0;
+  const wordInterval = setInterval(() => {
+    wordIndex = (wordIndex + 1) % words.length;
+    loadingText.textContent = '✦ ' + words[wordIndex] + '...';
+  }, 800);
+
   try {
     const res = await fetch('/api/llm/classify', {
       method: 'POST',
@@ -618,6 +818,8 @@ document.getElementById('exc-add-ai-btn').addEventListener('click', async () => 
     document.getElementById('exc-add-step1').classList.remove('is-hidden');
     btn.disabled = false;
     alert(t('exc.add-error') + ': ' + err.message);
+  } finally {
+    clearInterval(wordInterval);
   }
 });
 
@@ -679,8 +881,8 @@ function excPopulateAddForm(data) {
     document.getElementById('exc-add-new-l3').classList.add('is-hidden');
   }
 
-  // Set description
-  document.getElementById('exc-add-desc').value = data.description || document.getElementById('exc-add-input').value.trim();
+  // Set description - check if existing description exists for this combination
+  excUpdateDescription();
 
   // Pre-fill questions with user's original input
   const userInput = document.getElementById('exc-add-input').value.trim();
@@ -710,6 +912,7 @@ function excHandleAppChange() {
     newAppInput.classList.add('is-hidden');
   }
   excUpdateFlowOptions(appSel.value);
+  excUpdateDescription();
 }
 
 function excUpdateFlowOptions(appName) {
@@ -730,6 +933,7 @@ function excUpdateFlowOptions(appName) {
     } else {
       newFlowInput.classList.add('is-hidden');
     }
+    excUpdateDescription();
   };
 }
 
@@ -749,7 +953,40 @@ function excUpdateL3Options(l2Name) {
     } else {
       newL3Input.classList.add('is-hidden');
     }
+    excUpdateDescription();
   };
+}
+
+// Update description based on current selection
+function excUpdateDescription() {
+  const appSel = document.getElementById('exc-add-app');
+  const flowSel = document.getElementById('exc-add-flow');
+  const l2Sel = document.getElementById('exc-add-l2');
+  const l3Sel = document.getElementById('exc-add-l3');
+  const descInput = document.getElementById('exc-add-desc');
+
+  const app = appSel.value === '__new__' ? document.getElementById('exc-add-new-app').value.trim() : appSel.value;
+  const flow = flowSel.value === '__new__' ? document.getElementById('exc-add-new-flow').value.trim() : flowSel.value;
+  const l2_name = l2Sel.value === '__new__' ? document.getElementById('exc-add-new-l2').value.trim() : l2Sel.value;
+  const l3_name = l3Sel.value === '__new__' ? document.getElementById('exc-add-new-l3').value.trim() : l3Sel.value;
+
+  if (!app || !flow || !l2_name || !l3_name) {
+    // Use AI result if available, otherwise use user input
+    descInput.value = excAddClassifyResult ? excAddClassifyResult.description : document.getElementById('exc-add-input').value.trim();
+    return;
+  }
+
+  // Check if this combination already exists in the matrix
+  const key = app + '||' + flow + '||' + l3_name;
+  const existingCell = excState.cellData[key];
+
+  if (existingCell) {
+    // Use existing description
+    descInput.value = existingCell.primary._desc;
+  } else {
+    // Use AI generated description
+    descInput.value = excAddClassifyResult ? excAddClassifyResult.description : document.getElementById('exc-add-input').value.trim();
+  }
 }
 
 // App change handler
@@ -769,6 +1006,8 @@ document.getElementById('exc-add-l2').addEventListener('change', () => {
   const l3Label = document.querySelector('[data-i18n="exc.add-l3"]');
   const badge = l3Label ? l3Label.querySelector('.exc-add-new-badge') : null;
   if (badge) badge.remove();
+  // Update description
+  excUpdateDescription();
 });
 
 // Generic app choice
@@ -784,6 +1023,12 @@ document.getElementById('exc-add-create-new-app').addEventListener('click', () =
   newAppInput.value = document.getElementById('exc-add-generic-prompt').dataset.newApp || '';
   document.getElementById('exc-add-generic-prompt').classList.add('is-hidden');
 });
+
+// Update description when typing in new option inputs
+document.getElementById('exc-add-new-app').addEventListener('input', excUpdateDescription);
+document.getElementById('exc-add-new-flow').addEventListener('input', excUpdateDescription);
+document.getElementById('exc-add-new-l2').addEventListener('input', excUpdateDescription);
+document.getElementById('exc-add-new-l3').addEventListener('input', excUpdateDescription);
 
 // Confirm insert
 document.getElementById('exc-add-confirm').addEventListener('click', async () => {
