@@ -2282,7 +2282,7 @@ p {
 /* ===== Header Rows ===== */
 .exc-matrix-hr {
   position: sticky;
-  z-index: 3;
+  z-index: 10;
   box-sizing: border-box;
   overflow: hidden;
 }
