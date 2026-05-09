@@ -272,7 +272,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="dev 本地任务控制台")
     parser.add_argument("--config", default="dev/config/pipeline.config.json", help="主配置文件路径")
     parser.add_argument("--selected", default="baseApp", help="默认选中的 pipeline")
-    parser.add_argument("--host", default="127.0.0.1", help="Web 服务监听地址")
+    parser.add_argument("--host", default="0.0.0.0", help="Web 服务监听地址")
     parser.add_argument("--port", type=int, default=8765, help="Web 服务监听端口")
     parser.add_argument(
         "--log-file",

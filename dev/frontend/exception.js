@@ -555,9 +555,22 @@ document.getElementById('exc-modal-body').addEventListener('click', async (e) =>
 let excGeneralizeData = null;
 
 // Handle generalize button click
-document.getElementById('exc-modal-body').addEventListener('click', (e) => {
+document.getElementById('exc-modal-body').addEventListener('click', async (e) => {
   const btn = e.target.closest('.exc-q-generalize');
   if (!btn) return;
+
+  // Check LLM config first
+  try {
+    const res = await fetch('/api/user/config');
+    const cfg = await res.json();
+    if (!cfg.llm_api_url || !cfg.llm_api_key) {
+      alert(t('exc.add-no-llm'));
+      return;
+    }
+  } catch {
+    alert(t('exc.add-no-llm'));
+    return;
+  }
 
   excGeneralizeData = {
     question: btn.dataset.q,
