@@ -2508,7 +2508,7 @@ p {
 .exc-app-cell {
   position: sticky;
   left: 0;
-  z-index: 4;
+  z-index: 10;
   background: #f1f5f9;
   border-right: 2px solid var(--panel-border);
   border-bottom: 2px solid var(--panel-border);
@@ -2563,7 +2563,7 @@ p {
 .exc-flow-cell {
   position: sticky;
   left: 0;
-  z-index: 4;
+  z-index: 10;
   background: var(--panel);
   border-right: 2px solid var(--panel-border);
   border-bottom: 1px solid var(--panel-border);
