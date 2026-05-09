@@ -2285,6 +2285,7 @@ p {
   z-index: 10;
   box-sizing: border-box;
   overflow: hidden;
+  background: var(--panel);
 }
 
 /* Row heights must match the gap between consecutive sticky top values */
