@@ -2585,6 +2585,8 @@ p {
 
 /* ===== Data Cells ===== */
 .exc-cell {
+  position: relative;
+  z-index: 1;
   background: var(--panel);
   border-bottom: 1px solid var(--panel-border);
   border-right: 1px solid rgba(0,0,0,0.04);
