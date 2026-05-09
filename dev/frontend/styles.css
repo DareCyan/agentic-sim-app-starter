@@ -2903,14 +2903,14 @@ tbody tr:last-child .exc-app-fill.col-selected {
 /* Row selection — border around entire row via box-shadow */
 td.row-selected {
   box-shadow: inset 0 2px 0 0 var(--accent), inset 0 -2px 0 0 var(--accent) !important;
-  background: rgba(37, 99, 235, 0.06) !important;
+  background: #f0f5ff !important;
 }
 
 /* Left border on first cell */
 .exc-app-cell.row-selected,
 .exc-flow-cell.row-selected {
   box-shadow: inset 2px 0 0 0 var(--accent), inset 0 2px 0 0 var(--accent), inset 0 -2px 0 0 var(--accent) !important;
-  background: rgba(37, 99, 235, 0.1) !important;
+  background: #e8efff !important;
   padding-left: 10px !important;
 }
 

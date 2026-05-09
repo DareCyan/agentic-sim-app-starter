@@ -496,7 +496,7 @@ function excOpenCellModal(key) {
         html += '<span class="exc-q-num">' + (qi + 1) + '</span>';
         html += '<span class="exc-q-text">' + escHtml(q) + '</span>';
         html += '<button class="exc-q-copy" data-q-enc="' + encodeURIComponent(q) + '" title="' + t('exc.copy') + '">复制</button>';
-        html += '<button class="exc-q-generalize" data-q="' + escHtml(q) + '" data-app="' + escHtml(app) + '" data-flow="' + escHtml(flow) + '" data-l3="' + escHtml(l3Name) + '" title="泛化">泛化</button>';
+        html += '<button class="exc-q-generalize" data-q="' + escHtml(q) + '" data-app="' + escHtml(app) + '" data-flow="' + escHtml(flow) + '" data-l3="' + escHtml(l3Name) + '" title="泛化">✦ 泛化</button>';
         html += '</div>';
       });
       html += '</div>';
