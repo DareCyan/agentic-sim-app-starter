@@ -2584,6 +2584,7 @@ p {
 
 /* ===== Data Cells ===== */
 .exc-cell {
+  background: var(--panel);
   border-bottom: 1px solid var(--panel-border);
   border-right: 1px solid rgba(0,0,0,0.04);
   padding: 3px;
