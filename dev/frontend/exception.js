@@ -22,10 +22,10 @@ const excState = {
 const excCache = { loaded: false };
 
 const PRI_COLORS = {
-  P0: '#dc2626',
-  P1: '#d97706',
-  P2: '#2563eb',
-  P3: '#6b7280',
+  P0: '#c25450',
+  P1: '#c49a4a',
+  P2: '#6882b8',
+  P3: '#8c919a',
 };
 
 function excParsePriority(desc) {
