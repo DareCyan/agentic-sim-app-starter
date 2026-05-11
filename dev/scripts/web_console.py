@@ -192,7 +192,7 @@ def _sim_run(server: Any, device_id: str) -> None:
 
 # ===== Screen mirror helpers =====
 
-REMOTE_SCREENSHOT = "/data/local/tmp/sim_screen.png"
+REMOTE_SCREENSHOT = "/data/local/tmp/sim_screen.jpeg"
 
 
 def _sim_screen_loop(server: Any, device_id: str) -> None:
@@ -240,7 +240,7 @@ def _sim_capture_screen(device_id: str, logger: Any = None) -> bytes | None:
         ls_r = _hdc_run(["-t", device_id, "shell", "ls", "-la", REMOTE_SCREENSHOT], timeout=3)
         if logger:
             logger.warning("[screen-capture] remote file: %s", (ls_r.stdout or '').strip())
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".jpeg", delete=False) as tmp:
             tmp_path = tmp.name
         try:
             r2 = _hdc_run(["-t", device_id, "file", "recv", REMOTE_SCREENSHOT, tmp_path], timeout=5)
