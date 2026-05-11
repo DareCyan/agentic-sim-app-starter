@@ -840,16 +840,23 @@ function excPopulateAddForm(data) {
   // Populate app dropdown
   const appSel = document.getElementById('exc-add-app');
   appSel.innerHTML = '';
-  excState.appNames.forEach(name => {
+  const appNames = [...excState.appNames];
+  // If AI returned a new app not in list, add it
+  if (data.app && !appNames.includes(data.app)) {
+    appNames.push(data.app);
+  }
+  appNames.forEach(name => {
     appSel.innerHTML += '<option value="' + escHtml(name) + '">' + escHtml(name) + '</option>';
   });
   appSel.innerHTML += '<option value="__new__">' + t('exc.add-new-app') + '</option>';
-  appSel.value = data.app || excState.appNames[0] || '';
+  appSel.value = data.app || appNames[0] || '';
   excHandleAppChange();
 
-  // Populate flow dropdown
-  excUpdateFlowOptions(data.app);
-  document.getElementById('exc-add-flow').value = data.flow || '';
+  // Populate flow dropdown — pass AI result so new flows can be added
+  excUpdateFlowOptions(appSel.value, data.flow);
+  if (data.flow) {
+    document.getElementById('exc-add-flow').value = data.flow;
+  }
 
   // Populate L2 dropdown
   const l2Sel = document.getElementById('exc-add-l2');
@@ -921,18 +928,29 @@ function excHandleAppChange() {
   if (appSel.value === '__new__') {
     newAppInput.classList.remove('is-hidden');
     newAppInput.value = excAddClassifyResult ? excAddClassifyResult.app : '';
+    // Also show new flow input since the app is new
+    const flowSel = document.getElementById('exc-add-flow');
+    const newFlowInput = document.getElementById('exc-add-new-flow');
+    flowSel.innerHTML = '<option value="__new__">' + t('exc.add-new-flow') + '</option>';
+    flowSel.value = '__new__';
+    newFlowInput.classList.remove('is-hidden');
+    newFlowInput.value = excAddClassifyResult ? excAddClassifyResult.flow : '';
   } else {
     newAppInput.classList.add('is-hidden');
+    excUpdateFlowOptions(appSel.value, excAddClassifyResult ? excAddClassifyResult.flow : null);
   }
-  excUpdateFlowOptions(appSel.value);
   excUpdateDescription();
 }
 
-function excUpdateFlowOptions(appName) {
+function excUpdateFlowOptions(appName, aiFlow) {
   const flowSel = document.getElementById('exc-add-flow');
   const newFlowInput = document.getElementById('exc-add-new-flow');
   flowSel.innerHTML = '';
-  const flows = excState.appFlows[appName] || [];
+  const flows = [...(excState.appFlows[appName] || [])];
+  // If AI returned a new flow not in list, add it
+  if (aiFlow && !flows.includes(aiFlow)) {
+    flows.push(aiFlow);
+  }
   flows.forEach(f => {
     flowSel.innerHTML += '<option value="' + escHtml(f) + '">' + escHtml(f) + '</option>';
   });
