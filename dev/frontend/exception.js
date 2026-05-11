@@ -218,10 +218,10 @@ function excBuildMatrix() {
   let html = '';
   html += '<div class="exc-matrix-toolbar">';
   html += '<span class="exc-zoom-controls">';
-  html += '<button class="exc-zoom-btn" id="exc-zoom-out" title="缂╁皬">鈭?/button>';
+  html += '<button class="exc-zoom-btn" id="exc-zoom-out" title="缩小">−</button>';
   html += '<span class="exc-zoom-label" id="exc-zoom-label">100%</span>';
-  html += '<button class="exc-zoom-btn" id="exc-zoom-in" title="鏀惧ぇ">+</button>';
-  html += '<button class="exc-zoom-btn" id="exc-zoom-reset" title="閲嶇疆">鈫?/button>';
+  html += '<button class="exc-zoom-btn" id="exc-zoom-in" title="放大">+</button>';
+  html += '<button class="exc-zoom-btn" id="exc-zoom-reset" title="重置">↺</button>';
   html += '</span>';
   html += '</div>';
   html += '<div class="exc-matrix-table-wrap">';
