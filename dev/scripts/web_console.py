@@ -1620,7 +1620,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def log_message(self, format: str, *args: Any) -> None:
-        self.server.logger.info("web %s - %s", self.address_string(), format % args)
+        self.server.logger.debug("web %s - %s", self.address_string(), format % args)
 
 
 class ConsoleServer(ThreadingHTTPServer):

@@ -206,7 +206,7 @@ def handle_state_file(
 
     result_json = Path(state["result_json"])
     pid = state.get("agent", {}).get("pid")
-    logger.info("Start inspection for pipeline: %s", state.get("pipeline_key") or state.get("scenario_key"))
+    logger.debug("Start inspection for pipeline: %s", state.get("pipeline_key") or state.get("scenario_key"))
 
     if state.get("status") == "dry_run":
         state["runtime_ended_at"] = state.get("runtime_ended_at") or now_local_iso()
@@ -296,10 +296,10 @@ def run_loop(
             logger.info("Stop signal received, exit inspection loop")
             return
 
-        logger.info("Inspection cycle: %s/%s", index + 1, max_cycles)
+        logger.debug("Inspection cycle: %s/%s", index + 1, max_cycles)
         state_files = collect_state_files(repo_root, config, state_arg)
         if not state_files:
-            logger.info("No state files found for inspection")
+            logger.debug("No state files found for inspection")
 
         for state_file in state_files:
             current = load_runtime_state(state_file)
@@ -311,7 +311,7 @@ def run_loop(
                 state_logger.info("Stop signal received, abort current inspection")
                 return
 
-            state_logger.info("Processing inspection state file: %s", state_file)
+            state_logger.debug("Processing inspection state file: %s", state_file)
             handle_state_file(repo_root, config, state_file, logger, dry_run, stop_event)
 
             current = load_runtime_state(state_file)
