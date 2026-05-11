@@ -1204,7 +1204,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             if api_key:
                 req.add_header("Authorization", f"Bearer {api_key}")
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with urllib.request.urlopen(req, timeout=120) as resp:
                     resp_data = json.loads(resp.read().decode("utf-8"))
                     content = resp_data["choices"][0]["message"]["content"].strip()
                     # Strip markdown code fences if present
@@ -1380,7 +1380,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 req.add_header("Authorization", f"Bearer {api_key}")
 
             try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=120) as resp:
                     resp_data = json.loads(resp.read().decode("utf-8"))
                     content = resp_data["choices"][0]["message"]["content"].strip()
                     # Strip markdown code fences if present
@@ -1471,7 +1471,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                                 )
                                 if api_key:
                                     desc_req.add_header("Authorization", f"Bearer {api_key}")
-                                with urllib.request.urlopen(desc_req, timeout=30) as desc_resp:
+                                with urllib.request.urlopen(desc_req, timeout=60) as desc_resp:
                                     desc_resp_data = json.loads(desc_resp.read().decode("utf-8"))
                                     desc_content = desc_resp_data["choices"][0]["message"]["content"].strip()
                                     if desc_content.startswith("```"):
