@@ -197,42 +197,63 @@ REMOTE_SCREENSHOT = "/data/local/tmp/sim_screen.png"
 
 def _sim_screen_loop(server: Any, device_id: str) -> None:
     """Background loop: capture device screen at ~300ms intervals."""
+    server.logger.info("[screen-mirror] loop started for device=%s", device_id)
+    frame_count = 0
+    fail_count = 0
     while server.sim_screen_running:
         try:
-            png = _sim_capture_screen(device_id)
+            png = _sim_capture_screen(device_id, server.logger)
             if png:
                 server.sim_screen_png = png
+                frame_count += 1
+                if frame_count <= 3 or frame_count % 50 == 0:
+                    server.logger.info("[screen-mirror] captured frame #%d, size=%d bytes", frame_count, len(png))
                 # Extract resolution from PNG IHDR chunk (bytes 16-23)
                 if len(png) > 24 and png[12:16] == b'IHDR':
                     w = int.from_bytes(png[16:20], 'big')
                     h = int.from_bytes(png[20:24], 'big')
                     if w > 0 and h > 0:
                         server.sim_screen_resolution = (w, h)
-        except Exception:
-            pass
+            else:
+                fail_count += 1
+                if fail_count <= 3 or fail_count % 50 == 0:
+                    server.logger.warning("[screen-mirror] capture returned None (fail #%d)", fail_count)
+        except Exception as e:
+            fail_count += 1
+            server.logger.error("[screen-mirror] exception: %s", e)
         time.sleep(0.3)
+    server.logger.info("[screen-mirror] loop stopped, total frames=%d, failures=%d", frame_count, fail_count)
 
 
-def _sim_capture_screen(device_id: str) -> bytes | None:
+def _sim_capture_screen(device_id: str, logger: Any = None) -> bytes | None:
     """Capture device screen, return PNG bytes or None."""
     try:
         r = _hdc_run(["-t", device_id, "shell", "snapshot_display", "-f", REMOTE_SCREENSHOT], timeout=5)
         if r.returncode != 0:
+            if logger:
+                logger.warning("[screen-capture] snapshot_display failed: rc=%d stderr=%s", r.returncode, (r.stderr or '').strip())
             return None
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp_path = tmp.name
         try:
             r2 = _hdc_run(["-t", device_id, "file", "recv", REMOTE_SCREENSHOT, tmp_path], timeout=5)
             if r2.returncode != 0:
+                if logger:
+                    logger.warning("[screen-capture] file recv failed: rc=%d stderr=%s", r2.returncode, (r2.stderr or '').strip())
                 return None
             with open(tmp_path, "rb") as f:
-                return f.read()
+                data = f.read()
+            if logger and len(data) < 100:
+                logger.warning("[screen-capture] got tiny PNG: %d bytes (likely invalid)", len(data))
+            return data
         finally:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
-    except Exception:
+    except Exception as e:
+        if logger:
+            logger.error("[screen-capture] exception: %s", e)
         return None
 
 
@@ -939,8 +960,10 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/sim-build/screen":
             png = self.server.sim_screen_png
             if not png:
+                self.server.logger.debug("[screen] no frame available yet")
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
+            self.server.logger.debug("[screen] serving frame, size=%d bytes", len(png))
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "image/png")
             self.send_header("Content-Length", str(len(png)))
@@ -951,6 +974,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/sim-build/resolution":
             w, h = self.server.sim_screen_resolution
+            self.server.logger.debug("[screen] resolution requested: %dx%d", w, h)
             self._send_json({"width": w, "height": h})
             return
 
@@ -1024,6 +1048,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             if not device_id:
                 self._send_json({"ok": False, "message": "device_id required"}, HTTPStatus.BAD_REQUEST)
                 return
+            self.server.logger.info("[screen-mirror] start request for device=%s (already_running=%s)", device_id, self.server.sim_screen_running)
             # Stop existing screen loop if running for a different device
             if self.server.sim_screen_running:
                 self.server.sim_screen_running = False

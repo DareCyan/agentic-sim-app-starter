@@ -69,13 +69,17 @@ function simStartMirror(deviceId) {
   if (!deviceId) return;
   simBuild.deviceId = deviceId;
   simBuild.mirrorStandalone = true;
+  console.log('[sim-build] startMirror:', deviceId);
   fetch('/api/sim-build/mirror', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ device_id: deviceId }),
-  }).then(() => {
+  }).then(r => {
+    console.log('[sim-build] mirror response:', r.status);
     simScreenPollStart();
-  }).catch(() => {});
+  }).catch(e => {
+    console.error('[sim-build] mirror error:', e);
+  });
 }
 
 simEls.deviceSelect.addEventListener('change', simDeviceToggleManual);
@@ -190,6 +194,7 @@ function simBuildPollStop() {
 
 function simScreenPollStart() {
   if (simBuild.screenTimer) return;
+  console.log('[sim-build] screenPollStart');
   // Fetch resolution once
   simScreenFetchResolution();
   // Start frame polling
@@ -211,18 +216,24 @@ function simScreenFetchResolution() {
   fetch('/api/sim-build/resolution', { cache: 'no-store' })
     .then(r => r.json())
     .then(data => {
+      console.log('[sim-build] resolution:', data);
       if (data.width > 0 && data.height > 0) {
         simBuild.resolution = data;
         simScreenResizeCanvas();
       }
     })
-    .catch(() => {});
+    .catch(e => {
+      console.error('[sim-build] resolution error:', e);
+    });
 }
 
 function simScreenFetchFrame() {
   fetch('/api/sim-build/screen', { cache: 'no-store' })
     .then(r => {
-      if (!r.ok) return;
+      if (!r.ok) {
+        console.log('[sim-build] screen frame: HTTP', r.status);
+        return;
+      }
       return r.blob();
     })
     .then(blob => {
@@ -231,7 +242,9 @@ function simScreenFetchFrame() {
       simBuild.screenBlobUrl = URL.createObjectURL(blob);
       simEls.screenImg.src = simBuild.screenBlobUrl;
     })
-    .catch(() => {});
+    .catch(e => {
+      console.error('[sim-build] screen frame error:', e);
+    });
 }
 
 function simScreenResizeCanvas() {
