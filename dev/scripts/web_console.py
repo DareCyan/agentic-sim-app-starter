@@ -230,8 +230,8 @@ def _sim_capture_screen(device_id: str, logger: Any = None) -> bytes | None:
     try:
         r = _hdc_run(["-t", device_id, "shell", "snapshot_display", "-f", REMOTE_SCREENSHOT], timeout=5)
         if logger:
-            logger.debug("[screen-capture] snapshot_display: rc=%d stdout=%r stderr=%r",
-                         r.returncode, (r.stdout or '').strip(), (r.stderr or '').strip())
+            logger.warning("[screen-capture] snapshot_display: rc=%d stdout=%r stderr=%r",
+                           r.returncode, (r.stdout or '').strip(), (r.stderr or '').strip())
         if r.returncode != 0:
             if logger:
                 logger.warning("[screen-capture] snapshot_display failed: rc=%d stderr=%s", r.returncode, (r.stderr or '').strip())
@@ -239,14 +239,14 @@ def _sim_capture_screen(device_id: str, logger: Any = None) -> bytes | None:
         # Check file size on device
         ls_r = _hdc_run(["-t", device_id, "shell", "ls", "-la", REMOTE_SCREENSHOT], timeout=3)
         if logger:
-            logger.debug("[screen-capture] remote file: %s", (ls_r.stdout or '').strip())
+            logger.warning("[screen-capture] remote file: %s", (ls_r.stdout or '').strip())
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp_path = tmp.name
         try:
             r2 = _hdc_run(["-t", device_id, "file", "recv", REMOTE_SCREENSHOT, tmp_path], timeout=5)
             if logger:
-                logger.debug("[screen-capture] file recv: rc=%d stdout=%r stderr=%r",
-                             r2.returncode, (r2.stdout or '').strip(), (r2.stderr or '').strip())
+                logger.warning("[screen-capture] file recv: rc=%d stdout=%r stderr=%r",
+                               r2.returncode, (r2.stdout or '').strip(), (r2.stderr or '').strip())
             if r2.returncode != 0:
                 if logger:
                     logger.warning("[screen-capture] file recv failed: rc=%d stderr=%s", r2.returncode, (r2.stderr or '').strip())
