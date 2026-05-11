@@ -226,35 +226,27 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
 
 
 def _sim_capture_screen(device_id: str, logger: Any = None) -> bytes | None:
-    """Capture device screen, return PNG bytes or None."""
+    """Capture device screen, return JPEG bytes or None."""
     try:
-        r = _hdc_run(["-t", device_id, "shell", "snapshot_display", "-f", REMOTE_SCREENSHOT], timeout=5)
-        if logger:
-            logger.warning("[screen-capture] snapshot_display: rc=%d stdout=%r stderr=%r",
-                           r.returncode, (r.stdout or '').strip(), (r.stderr or '').strip())
+        r = _hdc_run(["-t", device_id, "shell", "snapshot_display", "-f", REMOTE_SCREENSHOT], timeout=3)
         if r.returncode != 0:
             if logger:
                 logger.warning("[screen-capture] snapshot_display failed: rc=%d stderr=%s", r.returncode, (r.stderr or '').strip())
             return None
-        # Check file size on device
-        ls_r = _hdc_run(["-t", device_id, "shell", "ls", "-la", REMOTE_SCREENSHOT], timeout=3)
-        if logger:
-            logger.warning("[screen-capture] remote file: %s", (ls_r.stdout or '').strip())
         with tempfile.NamedTemporaryFile(suffix=".jpeg", delete=False) as tmp:
             tmp_path = tmp.name
         try:
-            r2 = _hdc_run(["-t", device_id, "file", "recv", REMOTE_SCREENSHOT, tmp_path], timeout=5)
-            if logger:
-                logger.warning("[screen-capture] file recv: rc=%d stdout=%r stderr=%r",
-                               r2.returncode, (r2.stdout or '').strip(), (r2.stderr or '').strip())
+            r2 = _hdc_run(["-t", device_id, "file", "recv", REMOTE_SCREENSHOT, tmp_path], timeout=3)
             if r2.returncode != 0:
                 if logger:
                     logger.warning("[screen-capture] file recv failed: rc=%d stderr=%s", r2.returncode, (r2.stderr or '').strip())
                 return None
             with open(tmp_path, "rb") as f:
                 data = f.read()
-            if logger and len(data) < 100:
-                logger.warning("[screen-capture] got tiny PNG: %d bytes (likely invalid)", len(data))
+            if len(data) < 100:
+                if logger:
+                    logger.warning("[screen-capture] got tiny file: %d bytes", len(data))
+                return None
             return data
         finally:
             try:

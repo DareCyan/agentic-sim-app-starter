@@ -198,7 +198,7 @@ function simScreenPollStart() {
   // Fetch resolution once
   simScreenFetchResolution();
   // Start frame polling
-  simBuild.screenTimer = setInterval(simScreenFetchFrame, 400);
+  simBuild.screenTimer = setInterval(simScreenFetchFrame, 200);
   // Show screen UI
   simEls.screenImg.classList.add('is-visible');
   simEls.screenCanvas.classList.add('is-visible');
