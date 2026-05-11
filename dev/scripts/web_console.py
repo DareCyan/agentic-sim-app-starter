@@ -1553,7 +1553,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 if add_to_existing and existing_desc and new_scenario:
                     # Add scenario to existing description
                     existing = db.execute(
-                        "SELECT id, questions FROM scenarios s "
+                        "SELECT s.id, s.questions FROM scenarios s "
                         "JOIN fault_types ft ON s.fault_type_id=ft.id "
                         "WHERE s.app=? AND s.flow=? AND ft.name=? AND s.description=?",
                         (cell_app, cell_flow, cell_l3, existing_desc)

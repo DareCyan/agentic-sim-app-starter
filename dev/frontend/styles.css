@@ -2288,6 +2288,7 @@ p {
 
 /* ===== Matrix Cross-Table ===== */
 .exc-matrix-wrap {
+  position: relative;
   min-height: 0;
   overflow: hidden;
   display: grid;
@@ -2306,6 +2307,13 @@ p {
   height: 200px;
   color: var(--muted);
   font-size: 14px;
+}
+
+.exc-matrix-toolbar {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  z-index: 20;
 }
 
 .exc-matrix-table-wrap {

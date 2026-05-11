@@ -7,7 +7,7 @@ const excState = {
   // Derived
   appNames: [],      // sorted unique app names
   appFlows: {},      // app → [flows]
-  zoom: 1,           // table zoom level
+  zoom: 1,           // table zoom factor
   // Column-based structure (L3 is the column unit)
   columns: [],       // [{id, name, example, l2_name, l1_name, ci}, ...]
   l2Groups: [],      // [{name, l1_name, colStart, colEnd}, ...]
@@ -40,8 +40,7 @@ function excSetZoom(level) {
   excState.zoom = Math.max(0.3, Math.min(3, level));
   const tableWrap = document.querySelector('.exc-matrix-table-wrap');
   if (tableWrap) {
-    tableWrap.style.transform = 'scale(' + excState.zoom + ')';
-    tableWrap.style.transformOrigin = 'top left';
+    tableWrap.style.zoom = excState.zoom;
   }
   const label = document.getElementById('exc-zoom-label');
   if (label) label.textContent = Math.round(excState.zoom * 100) + '%';
@@ -89,10 +88,6 @@ async function excLoadAll() {
 }
 
 function excDeriveData() {
-  // App names
-  const appSet = new Set(excState.details.map(d => d.app));
-  excState.appNames = [...appSet].sort();
-
   // App flows mapping (preserve order from apps CSV)
   excState.appFlows = {};
   excState.apps.forEach(a => {
@@ -101,6 +96,9 @@ function excDeriveData() {
       excState.appFlows[a.category].push(a.flow);
     }
   });
+
+  // App names - always show all apps from config, not just those with scenarios
+  excState.appNames = Object.keys(excState.appFlows).sort();
 
   // Build flat columns list from matrix API (L3-based)
   excState.columns = [];
@@ -198,14 +196,8 @@ function excBuildStats() {
   html += '<div class="exc-stat-item"><span class="exc-stat-num">' + colCount + '</span><span class="exc-stat-label">' + t('exc.stat-types') + '</span></div>';
   html += '<div class="exc-stat-item"><span class="exc-stat-num">' + l2Count + '</span><span class="exc-stat-label">' + t('exc.stat-domains') + '</span></div>';
 
-  // Add button & zoom controls
+  // Add button
   html += '<div class="exc-stat-pri">';
-  html += '<span class="exc-zoom-controls">';
-  html += '<button class="exc-zoom-btn" id="exc-zoom-out" title="缩小">−</button>';
-  html += '<span class="exc-zoom-label" id="exc-zoom-label">100%</span>';
-  html += '<button class="exc-zoom-btn" id="exc-zoom-in" title="放大">+</button>';
-  html += '<button class="exc-zoom-btn" id="exc-zoom-reset" title="重置">↺</button>';
-  html += '</span>';
   html += '<button class="exc-add-btn" id="exc-add-btn">' + t('exc.add-btn') + '</button>';
   html += '</div>';
 
@@ -224,6 +216,14 @@ function excBuildMatrix() {
   const domains = excState.matrix.map(g => g.column);
 
   let html = '';
+  html += '<div class="exc-matrix-toolbar">';
+  html += '<span class="exc-zoom-controls">';
+  html += '<button class="exc-zoom-btn" id="exc-zoom-out" title="缂╁皬">鈭?/button>';
+  html += '<span class="exc-zoom-label" id="exc-zoom-label">100%</span>';
+  html += '<button class="exc-zoom-btn" id="exc-zoom-in" title="鏀惧ぇ">+</button>';
+  html += '<button class="exc-zoom-btn" id="exc-zoom-reset" title="閲嶇疆">鈫?/button>';
+  html += '</span>';
+  html += '</div>';
   html += '<div class="exc-matrix-table-wrap">';
   html += '<table class="exc-matrix-table">';
 
@@ -567,7 +567,12 @@ document.addEventListener('mousedown', (e) => {
 
 document.getElementById('exc-modal-close').addEventListener('click', excCloseModal);
 document.getElementById('exc-modal').addEventListener('click', (e) => {
-  if (e.target === e.currentTarget) excCloseModal();
+  if (e.target === e.currentTarget) {
+    // Don't close if user is selecting text
+    const selection = window.getSelection();
+    if (selection && selection.toString().length > 0) return;
+    excCloseModal();
+  }
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
@@ -636,6 +641,9 @@ document.getElementById('exc-generalize-close').addEventListener('click', () => 
 });
 document.getElementById('exc-generalize-modal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) {
+    // Don't close if user is selecting text
+    const selection = window.getSelection();
+    if (selection && selection.toString().length > 0) return;
     document.getElementById('exc-generalize-modal').classList.add('is-hidden');
   }
 });
@@ -667,9 +675,16 @@ async function excStartGeneralize(direction) {
   const originalTitle = modalTitle.textContent;
   modalTitle.textContent = '泛化中';
 
-  // Update loading text
+  // Start wave animation with random words
   const loadingText = document.getElementById('exc-add-loading-text');
-  loadingText.textContent = '✦ 泛化中...';
+  const words = currentLang === 'en'
+    ? ['Analyzing', 'Generalizing', 'Processing', 'Generating', 'Optimizing', 'Learning']
+    : ['分析中', '泛化中', '处理中', '生成中', '优化中', '学习中'];
+  let wordIndex = 0;
+  const wordInterval = setInterval(() => {
+    wordIndex = (wordIndex + 1) % words.length;
+    loadingText.textContent = '✦ ' + words[wordIndex] + '...';
+  }, 800);
 
   try {
     const res = await fetch('/api/llm/generalize', {
@@ -690,11 +705,13 @@ async function excStartGeneralize(direction) {
     }
 
     // Hide loading, close add modal, show confirm
+    clearInterval(wordInterval);
     document.getElementById('exc-add-step2').classList.add('is-hidden');
     document.getElementById('exc-add-modal').classList.add('is-hidden');
     modalTitle.textContent = originalTitle;
     excShowGeneralizeConfirm(data.results, direction);
   } catch (err) {
+    clearInterval(wordInterval);
     document.getElementById('exc-add-step2').classList.add('is-hidden');
     document.getElementById('exc-add-modal').classList.add('is-hidden');
     modalTitle.textContent = originalTitle;
@@ -828,7 +845,12 @@ function excCloseAddModal() {
 
 document.getElementById('exc-add-close').addEventListener('click', excCloseAddModal);
 document.getElementById('exc-add-modal').addEventListener('click', (e) => {
-  if (e.target === e.currentTarget) excCloseAddModal();
+  if (e.target === e.currentTarget) {
+    // Don't close if user is selecting text
+    const selection = window.getSelection();
+    if (selection && selection.toString().length > 0) return;
+    excCloseAddModal();
+  }
 });
 
 // AI Classify button
@@ -1145,7 +1167,9 @@ document.getElementById('exc-add-confirm').addEventListener('click', async () =>
     const data = await res.json();
     if (data.ok) {
       excCloseAddModal();
+      excCache.loaded = false;
       await excLoadAll();
+      excBuild();
     } else {
       alert(data.message || 'insert failed');
     }
