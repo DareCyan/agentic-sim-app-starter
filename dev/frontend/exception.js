@@ -522,6 +522,13 @@ function escHtml(str) {
 
 /* ===== Event Bindings ===== */
 
+// Prevent modal close when selecting text in inputs/textareas that extend to overlay
+document.addEventListener('mousedown', (e) => {
+  if (e.target.closest('.exc-modal-overlay') && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+    e.stopPropagation();
+  }
+}, true);
+
 document.getElementById('exc-modal-close').addEventListener('click', excCloseModal);
 document.getElementById('exc-modal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) excCloseModal();
