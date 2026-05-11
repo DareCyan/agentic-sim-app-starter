@@ -226,33 +226,29 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
 
 
 def _sim_capture_screen(device_id: str, logger: Any = None) -> bytes | None:
-    """Capture device screen, return JPEG bytes or None."""
+    """Capture device screen, return JPEG bytes or None.
+    Uses 'shell cat' instead of 'file recv' to avoid extra HDC round-trip."""
     try:
         r = _hdc_run(["-t", device_id, "shell", "snapshot_display", "-f", REMOTE_SCREENSHOT], timeout=3)
         if r.returncode != 0:
             if logger:
                 logger.warning("[screen-capture] snapshot_display failed: rc=%d stderr=%s", r.returncode, (r.stderr or '').strip())
             return None
-        with tempfile.NamedTemporaryFile(suffix=".jpeg", delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            r2 = _hdc_run(["-t", device_id, "file", "recv", REMOTE_SCREENSHOT, tmp_path], timeout=3)
-            if r2.returncode != 0:
-                if logger:
-                    logger.warning("[screen-capture] file recv failed: rc=%d stderr=%s", r2.returncode, (r2.stderr or '').strip())
-                return None
-            with open(tmp_path, "rb") as f:
-                data = f.read()
-            if len(data) < 100:
-                if logger:
-                    logger.warning("[screen-capture] got tiny file: %d bytes", len(data))
-                return None
-            return data
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+        # Read file via shell cat in binary mode (avoids file transfer overhead)
+        cat_result = subprocess.run(
+            ["hdc", "-t", device_id, "shell", "cat", REMOTE_SCREENSHOT],
+            capture_output=True, timeout=3, **windows_subprocess_kwargs(),
+        )
+        if cat_result.returncode != 0 or not cat_result.stdout:
+            if logger:
+                logger.warning("[screen-capture] cat failed: rc=%d stderr=%s", cat_result.returncode, cat_result.stderr.decode(errors="replace").strip())
+            return None
+        data = cat_result.stdout
+        if len(data) < 100:
+            if logger:
+                logger.warning("[screen-capture] got tiny file: %d bytes", len(data))
+            return None
+        return data
     except Exception as e:
         if logger:
             logger.error("[screen-capture] exception: %s", e)
