@@ -7,6 +7,7 @@ const excState = {
   // Derived
   appNames: [],      // sorted unique app names
   appFlows: {},      // app → [flows]
+  zoom: 1,           // table zoom level
   // Column-based structure (L3 is the column unit)
   columns: [],       // [{id, name, example, l2_name, l1_name, ci}, ...]
   l2Groups: [],      // [{name, l1_name, colStart, colEnd}, ...]
@@ -32,6 +33,28 @@ function excParsePriority(desc) {
   const m = desc.match(/^\[(P[0-4])\]\s*/);
   return m ? { priority: m[1], desc: desc.slice(m[0].length) } : { priority: '', desc };
 }
+
+/* ===== Zoom ===== */
+
+function excSetZoom(level) {
+  excState.zoom = Math.max(0.3, Math.min(3, level));
+  const tableWrap = document.querySelector('.exc-matrix-table-wrap');
+  if (tableWrap) {
+    tableWrap.style.transform = 'scale(' + excState.zoom + ')';
+    tableWrap.style.transformOrigin = 'top left';
+  }
+  const label = document.getElementById('exc-zoom-label');
+  if (label) label.textContent = Math.round(excState.zoom * 100) + '%';
+}
+
+// Ctrl+scroll to zoom
+document.getElementById('exc-matrix-wrap').addEventListener('wheel', (e) => {
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.05 : 0.05;
+    excSetZoom(excState.zoom + delta);
+  }
+}, { passive: false });
 
 /* ===== Data Loading ===== */
 
@@ -147,6 +170,13 @@ function excBuild() {
   // Bind add button
   const addBtn = document.getElementById('exc-add-btn');
   if (addBtn) addBtn.addEventListener('click', excOpenAddModal);
+  // Bind zoom controls
+  const zoomIn = document.getElementById('exc-zoom-in');
+  const zoomOut = document.getElementById('exc-zoom-out');
+  const zoomReset = document.getElementById('exc-zoom-reset');
+  if (zoomIn) zoomIn.addEventListener('click', () => excSetZoom(excState.zoom + 0.1));
+  if (zoomOut) zoomOut.addEventListener('click', () => excSetZoom(excState.zoom - 0.1));
+  if (zoomReset) zoomReset.addEventListener('click', () => excSetZoom(1));
 }
 
 /* ===== Stats Bar ===== */
@@ -168,8 +198,14 @@ function excBuildStats() {
   html += '<div class="exc-stat-item"><span class="exc-stat-num">' + colCount + '</span><span class="exc-stat-label">' + t('exc.stat-types') + '</span></div>';
   html += '<div class="exc-stat-item"><span class="exc-stat-num">' + l2Count + '</span><span class="exc-stat-label">' + t('exc.stat-domains') + '</span></div>';
 
-  // Add button
+  // Add button & zoom controls
   html += '<div class="exc-stat-pri">';
+  html += '<span class="exc-zoom-controls">';
+  html += '<button class="exc-zoom-btn" id="exc-zoom-out" title="缩小">−</button>';
+  html += '<span class="exc-zoom-label" id="exc-zoom-label">100%</span>';
+  html += '<button class="exc-zoom-btn" id="exc-zoom-in" title="放大">+</button>';
+  html += '<button class="exc-zoom-btn" id="exc-zoom-reset" title="重置">↺</button>';
+  html += '</span>';
   html += '<button class="exc-add-btn" id="exc-add-btn">' + t('exc.add-btn') + '</button>';
   html += '</div>';
 
