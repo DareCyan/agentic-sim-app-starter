@@ -136,7 +136,7 @@
       return inp.classList.contains('is-valid');
     });
     if (!allValid) {
-      alert(t('config.validate-fail') || '璇峰厛瀹屾垚鏈夋晥鐨勫ぇ妯″瀷閰嶇疆鏍￠獙');
+      alert(t('config.validate-fail') || '请先完成有效的大模型配置校验');
       return;
     }
 
@@ -175,11 +175,11 @@
           modal.classList.add('is-hidden');
         }, 800);
       } else {
-        alert(data.error || t('config.save-fail') || '淇濆瓨澶辫触');
+        alert(data.error || t('config.save-fail') || '保存失败');
         checkChanges();
       }
     } catch (e) {
-      alert(t('config.save-fail') || '淇濆瓨澶辫触');
+      alert(t('config.save-fail') || '保存失败');
       checkChanges();
     }
   });
