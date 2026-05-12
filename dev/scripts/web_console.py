@@ -259,6 +259,12 @@ def _sim_get_persistent_shell(server: Any, device_id: str) -> subprocess.Popen |
         proc.stdin.write(b"stty -echo 2>/dev/null\n")
         proc.stdin.flush()
         time.sleep(0.2)
+        # Diagnostic: check if base64 and od are available
+        proc.stdin.write(b"which base64 od 2>/dev/null; printf '\\n===END===\\n'\n")
+        proc.stdin.flush()
+        time.sleep(0.3)
+        tools_text = _sim_read_until_marker(proc, timeout=2.0, logger=server.logger)
+        server.logger.info("[screen-mirror] device tools: %s", tools_text.strip())
         server.sim_shell_proc = proc
         server.logger.info("[screen-mirror] persistent shell started for device=%s (pid=%d)", device_id, proc.pid)
         return proc
