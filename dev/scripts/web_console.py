@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import io
 import json
@@ -195,17 +196,6 @@ def _sim_run(server: Any, device_id: str) -> None:
 REMOTE_SCREENSHOT = "/data/local/tmp/sim_screen.jpeg"
 
 
-def _sim_hex_decode(hex_str: str) -> bytes:
-    """Decode hex string (spaces/newlines stripped) to bytes."""
-    clean = "".join(hex_str.split())
-    if len(clean) < 2 or len(clean) % 2 != 0:
-        return b""
-    try:
-        return bytes.fromhex(clean)
-    except ValueError:
-        return b""
-
-
 def _sim_read_until_marker(proc: subprocess.Popen, timeout: float = 5.0, logger: Any = None) -> str:
     """Read lines from proc stdout until ===END=== marker. Returns accumulated text."""
     result: list[str] = []
@@ -278,7 +268,7 @@ def _sim_get_persistent_shell(server: Any, device_id: str) -> subprocess.Popen |
 
 
 def _sim_capture_frame(server: Any, device_id: str) -> bytes | None:
-    """Capture one frame via persistent shell (od hex encoding)."""
+    """Capture one frame via persistent shell (base64 encoding)."""
     proc = _sim_get_persistent_shell(server, device_id)
     if not proc:
         return None
@@ -288,25 +278,35 @@ def _sim_capture_frame(server: Any, device_id: str) -> bytes | None:
             server.logger.warning("[screen-capture] shell died (exit=%d), will recreate", proc.returncode)
             _sim_kill_shell(server)
             return None
-        # Use `;` so marker prints even if od fails
+        # Use `;` so marker prints even if base64 fails
         cmd = (
             f"snapshot_display -f {REMOTE_SCREENSHOT} && "
-            f"od -An -tx1 {REMOTE_SCREENSHOT} | sed 's/ //g'; "
+            f"base64 {REMOTE_SCREENSHOT}; "
             f"printf '\\n===END===\\n'"
         )
         proc.stdin.write(cmd.encode() + b"\n")
         proc.stdin.flush()
 
-        # Read lines until marker (handles command echo + hex data)
-        hex_text = _sim_read_until_marker(proc, timeout=5.0, logger=server.logger)
-        data = _sim_hex_decode(hex_text)
+        # Read lines until marker (handles command echo + base64 data)
+        b64_text = _sim_read_until_marker(proc, timeout=5.0, logger=server.logger)
 
-        # Cleanup remote file (best-effort, don't block)
+        # Cleanup remote file (best-effort)
         try:
             proc.stdin.write(f"rm -f {REMOTE_SCREENSHOT}\n".encode())
             proc.stdin.flush()
         except Exception:
             pass
+
+        # Decode base64
+        b64_clean = "".join(b64_text.split())
+        if not b64_clean:
+            server.logger.debug("[screen-capture] no base64 data captured")
+            return None
+        try:
+            data = base64.b64decode(b64_clean, validate=False)
+        except Exception as e:
+            server.logger.debug("[screen-capture] base64 decode failed: %s", e)
+            return None
 
         if len(data) < 100:
             server.logger.debug("[screen-capture] decoded data too small: %d bytes", len(data))
