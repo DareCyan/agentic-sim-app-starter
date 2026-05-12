@@ -200,7 +200,7 @@ def _sim_run(server: Any, device_id: str) -> None:
 
 OHSCRCY_PORT = 27183
 OHSCRCY_SERVER_BIN = "ohscrcpy_server"
-OHSCRCY_SERVER_REMOTE = "/data/local/tmp/ohscrcpy_server"
+OHSCRCY_SERVER_REMOTE = "/system/bin/ohscrcpy_server"
 
 # Packet types (big-endian, matching OHScrcpy protocol)
 PKT_HEARTBEAT = 0
@@ -242,18 +242,41 @@ def _deploy_ohscrcpy(server: Any, device_id: str) -> None:
     _hdc_run(["-t", device_id, "shell", "pkill", "-f", "ohscrcpy_server"], timeout=3)
     time.sleep(0.3)
 
-    # Push binary to device
-    r = _hdc_run(["-t", device_id, "file", "send", str(bin_path), OHSCRCY_SERVER_REMOTE], timeout=30)
-    if r.returncode != 0:
-        raise RuntimeError(f"file send failed: {r.stderr}")
-    server.logger.info("[screen-mirror] file send ok: %s", r.stdout.strip())
+    # Try multiple strategies to get binary onto device in an executable location
+    remote_path = None
+
+    # Strategy 1: remount /system and push to /system/bin/
+    server.logger.info("[screen-mirror] trying /system/bin/ with target mount...")
+    _hdc_run(["-t", device_id, "target", "mount"], timeout=5)
+    time.sleep(1.0)
+    r = _hdc_run(["-t", device_id, "file", "send", str(bin_path), "/system/bin/ohscrcpy_server"], timeout=30)
+    if r.returncode == 0:
+        remote_path = "/system/bin/ohscrcpy_server"
+        server.logger.info("[screen-mirror] file send to /system/bin/ ok")
+    else:
+        # Strategy 2: shell-level mount remount
+        server.logger.info("[screen-mirror] /system/bin/ failed (%s), trying mount -o remount,rw /...", r.stderr.strip())
+        _hdc_run(["-t", device_id, "shell", "mount", "-o", "remount,rw", "/"], timeout=5)
+        time.sleep(0.5)
+        r = _hdc_run(["-t", device_id, "file", "send", str(bin_path), "/system/bin/ohscrcpy_server"], timeout=30)
+        if r.returncode == 0:
+            remote_path = "/system/bin/ohscrcpy_server"
+            server.logger.info("[screen-mirror] file send to /system/bin/ ok (after remount)")
+        else:
+            # Strategy 3: /data/local/tmp (may hit noexec/SELinux)
+            server.logger.info("[screen-mirror] /system/bin/ still failed (%s), trying /data/local/tmp/...", r.stderr.strip())
+            r = _hdc_run(["-t", device_id, "file", "send", str(bin_path), "/data/local/tmp/ohscrcpy_server"], timeout=30)
+            if r.returncode == 0:
+                remote_path = "/data/local/tmp/ohscrcpy_server"
+                server.logger.info("[screen-mirror] file send to /data/local/tmp/ ok")
+            else:
+                raise RuntimeError(f"Cannot push binary to device: {r.stderr}")
 
     # Make executable
-    r = _hdc_run(["-t", device_id, "shell", "chmod", "+x", OHSCRCY_SERVER_REMOTE], timeout=3)
-    server.logger.info("[screen-mirror] chmod: rc=%d stdout=%s stderr=%s", r.returncode, r.stdout.strip(), r.stderr.strip())
+    _hdc_run(["-t", device_id, "shell", "chmod", "+x", remote_path], timeout=3)
 
-    # Verify binary is there and executable
-    r = _hdc_run(["-t", device_id, "shell", "ls", "-la", OHSCRCY_SERVER_REMOTE], timeout=3)
+    # Verify binary
+    r = _hdc_run(["-t", device_id, "shell", "ls", "-la", remote_path], timeout=3)
     server.logger.info("[screen-mirror] ls: %s", r.stdout.strip())
 
     # Prepare device: wake up, keep screen on
@@ -263,27 +286,38 @@ def _deploy_ohscrcpy(server: Any, device_id: str) -> None:
 
     # Start server in background on device
     proc = subprocess.Popen(
-        ["hdc", "-t", device_id, "shell", OHSCRCY_SERVER_REMOTE, "-p", str(OHSCRCY_PORT)],
+        ["hdc", "-t", device_id, "shell", remote_path, "-p", str(OHSCRCY_PORT)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         **windows_subprocess_kwargs(),
     )
     time.sleep(2.0)
 
-    # Check what the server process outputted
-    server_out = proc.stdout.read1(4096) if hasattr(proc.stdout, 'read1') else b""
-    server_err = proc.stderr.read1(4096) if hasattr(proc.stderr, 'read1') else b""
+    # Check server output
+    server_out = b""
+    server_err = b""
+    try:
+        import select
+        if hasattr(proc.stdout, 'read1'):
+            server_out = proc.stdout.read1(4096)
+        if hasattr(proc.stderr, 'read1'):
+            server_err = proc.stderr.read1(4096)
+    except Exception:
+        pass
     server.logger.info("[screen-mirror] server proc stdout=%s stderr=%s", server_out[:500], server_err[:500])
 
     # Verify server is running
     r = _hdc_run(["-t", device_id, "shell", "pgrep", "-f", "ohscrcpy_server"], timeout=3)
     server.logger.info("[screen-mirror] pgrep: rc=%d stdout='%s' stderr='%s'", r.returncode, r.stdout.strip(), r.stderr.strip())
     if r.returncode != 0 or not r.stdout.strip():
-        # Try ps as alternative
         r2 = _hdc_run(["-t", device_id, "shell", "ps", "-ef"], timeout=3)
         server.logger.info("[screen-mirror] ps grep ohscrcpy: %s",
                           "\n".join(l for l in r2.stdout.splitlines() if "ohscrcpy" in l))
-        raise RuntimeError("ohscrcpy_server failed to start on device")
-    server.logger.info("[screen-mirror] ohscrcpy_server running, PID=%s", r.stdout.strip())
+        raise RuntimeError(f"ohscrcpy_server failed to start on device (path={remote_path})")
+    server.logger.info("[screen-mirror] ohscrcpy_server running at %s, PID=%s", remote_path, r.stdout.strip())
+
+    # Store for cleanup
+    server._ohscrcpy_remote_path = remote_path
+    server._ohscrcpy_hdc_proc = proc
 
     # Remove old port forwarding, set up new one
     _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{OHSCRCY_PORT}", f"tcp:{OHSCRCY_PORT}"], timeout=3)
@@ -291,9 +325,6 @@ def _deploy_ohscrcpy(server: Any, device_id: str) -> None:
     if r.returncode != 0:
         raise RuntimeError(f"fport failed: {r.stderr}")
     server.logger.info("[screen-mirror] port forwarding set up on :%d", OHSCRCY_PORT)
-
-    # Store the hdc process so we can clean it up later
-    server._ohscrcpy_hdc_proc = proc
 
 
 def _cleanup_ohscrcpy(server: Any, device_id: str) -> None:
