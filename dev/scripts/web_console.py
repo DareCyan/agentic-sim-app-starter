@@ -328,6 +328,7 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
     decoder_ready = False
     channel = None
     stub = None
+    _touch_stop = threading.Event()
 
     try:
         # Connect gRPC channel
@@ -358,10 +359,54 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
             server.logger.error("[screen-mirror] gRPC connect failed after retries")
             return
 
-        # Request video stream
+        # Wake screen and trigger a change so server starts sending frames
+        _hdc_run(["-t", device_id, "shell", "power-shell", "wakeup"], timeout=3)
+        time.sleep(0.5)
+        _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "click", "100", "100"], timeout=3)
+        time.sleep(0.5)
+
+        # Background thread: keep screen changing so server keeps sending frames
+        _touch_stop = threading.Event()
+        _last_frame_time = [time.monotonic()]  # mutable for closure
+
+        def _touch_loop():
+            while not _touch_stop.is_set():
+                try:
+                    _hdc_run(["-t", device_id, "shell", "uitest", "uiInput",
+                              "click", "50", "50"], timeout=3)
+                except Exception:
+                    pass
+                # Request IDR keyframe every 5s to help decoder
+                try:
+                    stub.onRequestIDRFrame(Empty(), timeout=5)
+                except Exception:
+                    pass
+                _touch_stop.wait(2.0)
+
+        touch_thread = threading.Thread(target=_touch_loop, daemon=True)
+        touch_thread.start()
+
+        # Request video stream (long timeout — server only sends when screen changes)
         server.logger.info("[screen-mirror] requesting onStart stream...")
-        stream = stub.onStart(Empty(), timeout=10)
+        stream = stub.onStart(Empty(), timeout=60)
         server.logger.info("[screen-mirror] onStart stream established, waiting for data...")
+
+        # Watchdog: close channel if no frames for 15s (dead stream detection)
+        def _watchdog():
+            while not _touch_stop.is_set():
+                _touch_stop.wait(3)
+                if _touch_stop.is_set():
+                    break
+                elapsed = time.monotonic() - _last_frame_time[0]
+                if elapsed > 15 and frame_count == 0:
+                    server.logger.warning("[screen-mirror] no frames received in %.0fs, closing dead stream", elapsed)
+                    try:
+                        channel.close()
+                    except Exception:
+                        pass
+                    break
+        wd = threading.Thread(target=_watchdog, daemon=True)
+        wd.start()
 
         # H.264 decoder
         import av as _av
@@ -370,6 +415,8 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
         for reply in stream:
             if not server.sim_screen_running:
                 break
+
+            _last_frame_time[0] = time.monotonic()
 
             # ReplyMessage: data (string=H.264 frame), reply_type (int), payload (map)
             frame_bytes = reply.data if reply.data else None
@@ -438,8 +485,13 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
                     server.logger.warning("[screen-mirror] decode error: %s", e)
 
     except Exception as e:
-        server.logger.error("[screen-mirror] stream error: %s", e)
+        code = getattr(e, "code", lambda: None)()
+        if code and code.name == "DEADLINE_EXCEEDED":
+            server.logger.error("[screen-mirror] DEADLINE_EXCEEDED — server sent no data (timeout). Check .so compatibility.")
+        else:
+            server.logger.error("[screen-mirror] stream error: %s", e)
     finally:
+        _touch_stop.set()
         if codec_ctx:
             try:
                 codec_ctx.close()
