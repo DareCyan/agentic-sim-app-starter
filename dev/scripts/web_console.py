@@ -198,7 +198,8 @@ def _sim_run(server: Any, device_id: str) -> None:
 
 # ===== Screen mirror: HOScrcpy gRPC H.264 streaming =====
 
-HOSCRCPY_PORT = 8710
+HOSCRCPY_DEVICE_PORT = 5000  # device-side port (-p param), Java default
+HOSCRCPY_LOCAL_PORT = 36537  # local forwarding port (Java uses random 36000-37000)
 HOSCRCPY_SO_REMOTE = "/data/local/tmp/libscreen_casting.z.so"
 HOSCRCPY_AGENT_REMOTE = "/data/local/tmp/agent.so"
 HOSCRCPY_GRPC_SOCKET = "scrcpy_grpc_socket"
@@ -281,11 +282,11 @@ def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
 def _cleanup_hosscrcpy(server: Any, device_id: str) -> None:
     """Stop uitest on device and remove port forwarding."""
     try:
-        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=3)
+        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=3)
     except Exception:
         pass
     try:
-        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"tcp:{HOSCRCPY_PORT}"], timeout=3)
+        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"tcp:{HOSCRCPY_DEVICE_PORT}"], timeout=3)
     except Exception:
         pass
     try:
@@ -313,7 +314,7 @@ def _socket_closed(sock):
         return True
 
 
-def _reconnect_socket(port=HOSCRCPY_PORT):
+def _reconnect_socket(port=HOSCRCPY_LOCAL_PORT):
     """Create a new socket connection to the device."""
     import socket
     try:
@@ -351,15 +352,15 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
         # Deploy this .so
         _hdc_run(["-t", device_id, "file", "send", str(so_path), HOSCRCPY_SO_REMOTE], timeout=30)
 
-        # Start uitest with config params
+        # Start uitest with config params (match Java: extension-name is just filename, not full path)
         uitest_cmd = (
             f"/system/bin/uitest start-daemon singleness"
-            f" --extension-name {HOSCRCPY_SO_REMOTE}"
-            f" -scale 1.0 -frameRate 30 -bitRate 4000000"
-            f" -p {HOSCRCPY_PORT} -iFrameInterval 5 &"
+            f" --extension-name libscreen_casting.z.so"
+            f" -scale 1 -frameRate 120 -bitRate 31457280"
+            f" -p {HOSCRCPY_DEVICE_PORT} -iFrameInterval 2000 &"
         )
         _hdc_run(["-t", device_id, "shell", uitest_cmd], timeout=5)
-        time.sleep(2.0)
+        time.sleep(4.0)
 
         # Verify uitest is running
         r = _hdc_run(["-t", device_id, "shell", "pgrep", "-f", "uitest"], timeout=3)
@@ -367,13 +368,13 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
             server.logger.info("[screen-mirror] %s: uitest not running after start", so_name)
             return 0
 
-        # Remove old fport, add new
-        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=3)
-        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"tcp:{HOSCRCPY_PORT}"], timeout=3)
+        # Remove old fport, add new (local=random high port, device=abstract socket or TCP)
+        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=3)
+        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"tcp:{HOSCRCPY_DEVICE_PORT}"], timeout=3)
 
-        r1 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=5)
+        r1 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=5)
         if r1.returncode != 0:
-            r2 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_PORT}", f"tcp:{HOSCRCPY_PORT}"], timeout=5)
+            r2 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"tcp:{HOSCRCPY_DEVICE_PORT}"], timeout=5)
             if r2.returncode != 0:
                 server.logger.info("[screen-mirror] %s: fport failed", so_name)
                 return 0
@@ -387,8 +388,8 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
         for attempt in range(3):
             try:
                 channel = _grpc.insecure_channel(
-                    f"dns:///127.0.0.1:{HOSCRCPY_PORT}",
-                    options=[("grpc.max_receive_message_length", 50 * 1024 * 1024)],
+                    f"dns:///127.0.0.1:{HOSCRCPY_LOCAL_PORT}",
+                    options=[("grpc.max_receive_message_length", 100 * 1024 * 1024)],
                 )
                 stub = ScrcpyServiceStub(channel)
                 _grpc.channel_ready_future(channel).result(timeout=3)
