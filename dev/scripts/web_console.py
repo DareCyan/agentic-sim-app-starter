@@ -201,7 +201,7 @@ def _sim_run(server: Any, device_id: str) -> None:
 HOSCRCPY_PORT = 5000
 HOSCRCPY_SO_REMOTE = "/data/local/tmp/libscreen_casting.z.so"
 HOSCRCPY_AGENT_REMOTE = "/data/local/tmp/agent.so"
-UITEST_SOCKET = "uitest_socket"
+HOSCRCPY_GRPC_SOCKET = "scrcpy_grpc_socket"
 
 # Kernel version → .so filename mapping (extracted from hosscrcpy-1.0.15-beta.jar)
 _KERNEL_SO_MAP = {
@@ -234,7 +234,7 @@ def _find_hosscrcpy_native() -> Path:
 
 
 def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
-    """Deploy hosscrcpy .so to device and start via uitest, set up gRPC port forwarding."""
+    """Deploy hosscrcpy agent + server .so, start uitest, set up gRPC port forwarding."""
     native_dir = _find_hosscrcpy_native()
 
     # Kill existing uitest daemon
@@ -243,7 +243,8 @@ def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
     time.sleep(0.5)
 
     # Clean up old port forwarding
-    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{UITEST_SOCKET}"], timeout=3)
+    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=3)
+    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"tcp:{HOSCRCPY_PORT}"], timeout=3)
 
     # Check uitest availability
     r = _hdc_run(["-t", device_id, "shell", "/system/bin/uitest", "--version"], timeout=5)
@@ -258,6 +259,20 @@ def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
         so_path = native_dir / "libscrcpy" / _FALLBACK_SO
     server.logger.info("[screen-mirror] using .so: %s", so_path.name)
 
+    # Deploy agent.so — Java SDK deploys this alongside the server
+    agent_names = ["uitest_agent_1.2.3.so", "uitest_agent_1.1.12.so", "uitest_agent_1.1.5.so"]
+    agent_deployed = False
+    for agent_name in agent_names:
+        agent_path = native_dir / agent_name
+        if agent_path.exists():
+            r = _hdc_run(["-t", device_id, "file", "send", str(agent_path), HOSCRCPY_AGENT_REMOTE], timeout=30)
+            if r.returncode == 0:
+                server.logger.info("[screen-mirror] deployed %s to %s", agent_name, HOSCRCPY_AGENT_REMOTE)
+                agent_deployed = True
+                break
+    if not agent_deployed:
+        server.logger.warning("[screen-mirror] no agent.so found, continuing without it")
+
     # Deploy server .so to device
     r = _hdc_run(["-t", device_id, "file", "send", str(so_path), HOSCRCPY_SO_REMOTE], timeout=30)
     if r.returncode != 0:
@@ -269,8 +284,14 @@ def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
     _hdc_run(["-t", device_id, "shell", "power-shell", "setmode", "602"], timeout=3)
     _hdc_run(["-t", device_id, "shell", "power-shell", "timeout", "-o", "86400000"], timeout=3)
 
-    # Start uitest with extension: the .so is loaded as a screen capture extension
-    uitest_cmd = f"/system/bin/uitest start-daemon singleness --extension-name {HOSCRCPY_SO_REMOTE} -p {HOSCRCPY_PORT} &"
+    # Start uitest with extension + config params (matching Java SDK's HosRemoteConfig)
+    # Java passes: -scale 1.0 -frameRate 30 -bitRate 4000000 -p <port> -iFrameInterval 5
+    uitest_cmd = (
+        f"/system/bin/uitest start-daemon singleness"
+        f" --extension-name {HOSCRCPY_SO_REMOTE}"
+        f" -scale 1.0 -frameRate 30 -bitRate 4000000"
+        f" -p {HOSCRCPY_PORT} -iFrameInterval 5 &"
+    )
     _hdc_run(["-t", device_id, "shell", uitest_cmd], timeout=5)
     server.logger.info("[screen-mirror] uitest start-daemon sent")
     time.sleep(2.0)
@@ -281,12 +302,10 @@ def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
     if r.returncode != 0 or not r.stdout.strip():
         raise RuntimeError("uitest failed to start on device")
 
-    # Set up port forwarding: TCP port → uitest_socket
-    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"tcp:{HOSCRCPY_PORT}"], timeout=3)
-    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{UITEST_SOCKET}"], timeout=3)
-    r = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{UITEST_SOCKET}"], timeout=5)
+    # Set up port forwarding: TCP → scrcpy_grpc_socket (gRPC streaming socket)
+    r = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=5)
     if r.returncode != 0:
-        # Fallback: try TCP-to-TCP forwarding (some devices use TCP server directly)
+        # Fallback: TCP-to-TCP (some .so versions listen on TCP directly)
         r2 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_PORT}", f"tcp:{HOSCRCPY_PORT}"], timeout=5)
         if r2.returncode != 0:
             raise RuntimeError(f"fport failed: {r.stderr}")
@@ -299,7 +318,7 @@ def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
 def _cleanup_hosscrcpy(server: Any, device_id: str) -> None:
     """Stop uitest on device and remove port forwarding."""
     try:
-        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{UITEST_SOCKET}"], timeout=3)
+        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=3)
     except Exception:
         pass
     try:
@@ -351,10 +370,127 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
     import subprocess
 
     def _try_hosscrcpy_stream():
-        """Attempt hosscrcpy raw socket streaming. Returns frame count (0 = failed)."""
-        # Socket approach doesn't work yet — the .so doesn't respond to any command format.
-        # TODO: Reverse-engineer the exact uitestkit RPC protocol from Java source.
-        return 0
+        """Attempt hosscrcpy gRPC H.264 streaming. Returns frame count (0 = failed)."""
+        import grpc as _grpc
+        from scrcpy_pb2 import Empty
+        from scrcpy_pb2_grpc import ScrcpyServiceStub
+
+        # Connect gRPC channel to scrcpy_grpc_socket (forwarded to localhost:PORT)
+        channel = None
+        stub = None
+        for attempt in range(10):
+            if not server.sim_screen_running:
+                return 0
+            try:
+                channel = _grpc.insecure_channel(f"127.0.0.1:{HOSCRCPY_PORT}")
+                stub = ScrcpyServiceStub(channel)
+                _grpc.channel_ready_future(channel).result(timeout=3)
+                server.logger.info("[screen-mirror] gRPC channel connected")
+                break
+            except Exception as e:
+                if channel:
+                    try:
+                        channel.close()
+                    except Exception:
+                        pass
+                    channel = None
+                    stub = None
+                if attempt < 9:
+                    server.logger.info("[screen-mirror] gRPC retry %d/10: %s", attempt + 1, e)
+                    time.sleep(1.5)
+        if not stub:
+            server.logger.error("[screen-mirror] gRPC connect failed")
+            return 0
+
+        # Wake screen and trigger initial change
+        _hdc_run(["-t", device_id, "shell", "power-shell", "wakeup"], timeout=3)
+        time.sleep(0.5)
+        _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "click", "100", "100"], timeout=3)
+        time.sleep(0.5)
+
+        # Background touch to keep frames flowing
+        _touch_stop_local = threading.Event()
+
+        def _touch():
+            while not _touch_stop_local.is_set():
+                try:
+                    _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "click", "50", "50"], timeout=3)
+                except Exception:
+                    pass
+                try:
+                    stub.onRequestIDRFrame(Empty(), timeout=5)
+                except Exception:
+                    pass
+                _touch_stop_local.wait(2.0)
+
+        threading.Thread(target=_touch, daemon=True).start()
+
+        # Start H.264 stream
+        server.logger.info("[screen-mirror] requesting onStart stream...")
+        stream = stub.onStart(Empty(), timeout=60)
+        server.logger.info("[screen-mirror] stream established, decoding...")
+
+        import av as _av
+        from PIL import Image
+        codec_ctx = _av.CodecContext.create("h264", "r")
+        frame_count = 0
+
+        for reply in stream:
+            if not server.sim_screen_running:
+                break
+            frame_bytes = reply.data if reply.data else None
+            if not frame_bytes:
+                continue
+
+            if frame_count == 0:
+                pl_keys = list(reply.payload.keys()) if reply.payload else []
+                server.logger.info("[screen-mirror] first frame: %d bytes, type=%d, payload=%s",
+                                  len(frame_bytes), reply.reply_type, pl_keys)
+
+            # Resolution from payload
+            if reply.payload:
+                try:
+                    w_val = reply.payload.get("width")
+                    h_val = reply.payload.get("height")
+                    if w_val and h_val:
+                        w = int(w_val.val_int or w_val.val_double or 0)
+                        h = int(h_val.val_int or h_val.val_double or 0)
+                        if w > 0 and h > 0:
+                            server.sim_screen_resolution = (w, h)
+                except Exception:
+                    pass
+
+            # Decode H.264 → JPEG
+            try:
+                if not frame_bytes.startswith(b"\x00\x00\x00\x01"):
+                    frame_bytes = b"\x00\x00\x00\x01" + frame_bytes
+                for pkt in codec_ctx.parse(frame_bytes):
+                    for frame in codec_ctx.decode(pkt):
+                        rgb = frame.to_ndarray(format="rgb24")
+                        img = Image.fromarray(rgb, "RGB")
+                        buf = io.BytesIO()
+                        img.save(buf, format="JPEG", quality=80)
+                        server.sim_screen_jpeg = buf.getvalue()
+                        frame_count += 1
+                        if frame_count <= 5 or frame_count % 100 == 0:
+                            server.logger.info("[screen-mirror] frame #%d, %d bytes", frame_count, len(server.sim_screen_jpeg))
+                        break
+            except Exception as e:
+                if frame_count <= 5:
+                    server.logger.warning("[screen-mirror] decode error: %s", e)
+
+        _touch_stop_local.set()
+        if codec_ctx:
+            try:
+                codec_ctx.close()
+            except Exception:
+                pass
+        if channel:
+            try:
+                channel.close()
+            except Exception:
+                pass
+        return frame_count
 
     def _snapshot_stream():
         """Reliable fallback: periodic hdc shell screencap."""
@@ -376,17 +512,16 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
         touch_thread.start()
 
         import tempfile
+        remote_snap = "/data/local/tmp/screen.jpeg"
         while server.sim_screen_running:
             try:
-                # Capture screenshot via hdc
-                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                tmp.close()
-                r = _hdc_run(["-t", device_id, "shell", "snapshot_display"], timeout=5)
-                if r.returncode == 0 and r.stdout.strip():
-                    # snapshot_display outputs file path
-                    remote_path = r.stdout.strip().split("\n")[-1]
-                    r2 = _hdc_run(["-t", device_id, "file", "recv", remote_path, tmp.name], timeout=5)
-                    if r2.returncode == 0:
+                # Capture screenshot with explicit output path (Java uses -f flag)
+                r = _hdc_run(["-t", device_id, "shell", "snapshot_display", "-f", remote_snap], timeout=5)
+                if r.returncode == 0:
+                    tmp = tempfile.NamedTemporaryFile(suffix=".jpeg", delete=False)
+                    tmp.close()
+                    r2 = _hdc_run(["-t", device_id, "file", "recv", remote_snap, tmp.name], timeout=5)
+                    if r2.returncode == 0 and os.path.getsize(tmp.name) > 100:
                         from PIL import Image
                         img = Image.open(tmp.name)
                         buf = io.BytesIO()
@@ -396,13 +531,11 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
                         if frame_count <= 3 or frame_count % 30 == 0:
                             server.logger.info("[screen-mirror] snapshot #%d, %d bytes",
                                               frame_count, len(server.sim_screen_jpeg))
-                        # Clean up remote file
-                        _hdc_run(["-t", device_id, "shell", "rm", "-f", remote_path], timeout=2)
-                try:
-                    import os
-                    os.unlink(tmp.name)
-                except Exception:
-                    pass
+                    try:
+                        os.unlink(tmp.name)
+                    except Exception:
+                        pass
+                    _hdc_run(["-t", device_id, "shell", "rm", "-f", remote_snap], timeout=2)
             except Exception as e:
                 if frame_count <= 3:
                     server.logger.warning("[screen-mirror] snapshot error: %s", e)
