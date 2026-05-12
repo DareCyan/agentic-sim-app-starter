@@ -345,246 +345,91 @@ def _reconnect_socket(port=HOSCRCPY_PORT):
 
 
 def _sim_screen_loop(server: Any, device_id: str) -> None:
-    """Screen streaming loop using hosscrcpy raw socket protocol."""
+    """Screen streaming loop — try hosscrcpy socket, fall back to hdc snapshots."""
     import socket
     import json as _json
+    import subprocess
 
-    server.logger.info("[screen-mirror] raw socket streaming loop started for device=%s", device_id)
-    frame_count = 0
-    sock = None
-    _touch_stop = threading.Event()
+    def _try_hosscrcpy_stream():
+        """Attempt hosscrcpy raw socket streaming. Returns frame count (0 = failed)."""
+        # Socket approach doesn't work yet — the .so doesn't respond to any command format.
+        # TODO: Reverse-engineer the exact uitestkit RPC protocol from Java source.
+        return 0
 
-    try:
-        # Connect to uitest_socket via port forwarding
-        for attempt in range(10):
-            if not server.sim_screen_running:
-                return
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                sock.settimeout(5)
-                sock.connect(("127.0.0.1", HOSCRCPY_PORT))
-                server.logger.info("[screen-mirror] connected to uitest socket")
-                break
-            except Exception as e:
-                if sock:
-                    try:
-                        sock.close()
-                    except Exception:
-                        pass
-                    sock = None
-                if attempt < 9:
-                    server.logger.info("[screen-mirror] socket connect retry %d/10: %s", attempt + 1, e)
-                    time.sleep(1.5)
-        if not sock:
-            server.logger.error("[screen-mirror] socket connect failed after retries")
-            return
-
-        # Wake screen and trigger a change
-        _hdc_run(["-t", device_id, "shell", "power-shell", "wakeup"], timeout=3)
-        time.sleep(0.5)
-        _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "click", "100", "100"], timeout=3)
-        time.sleep(0.5)
-
-        buf = b""
-
-        # Step 1: Read any initial data from server (handshake?)
-        server.logger.info("[screen-mirror] reading initial data from server...")
-        sock.settimeout(3)
-        try:
-            init = sock.recv(4096)
-            if init:
-                server.logger.info("[screen-mirror] server sent %d initial bytes: %s",
-                                  len(init), init[:128])
-                buf = init
-        except socket.timeout:
-            server.logger.info("[screen-mirror] no initial data (timeout)")
-        except Exception as e:
-            server.logger.info("[screen-mirror] initial read error: %s", e)
-
-        # Step 2: Try sending commands — the Java SDK sends events via socket
-        # Based on Java strings: "send startScreenCapture event", "send touch event message"
-        RPC_HEAD = b"_uitestkit_rpc_message_head_"
-        RPC_TAIL = b"_uitestkit_rpc_message_tail_"
-
-        commands = [
-            # Format A: JSON with method/params (standard RPC)
-            _json.dumps({"method": "startScreenCapture", "params": {"displayId": 0}}),
-            # Format B: JSON with action
-            _json.dumps({"action": "startScreenCapture", "displayId": 0}),
-            # Format C: Just the event name (like Java's sendUitestRequest)
-            "startScreenCapture",
-            # Format D: Event with displayId
-            "startScreenCapture:0",
-            # Format E: Image capture
-            _json.dumps({"method": "startImageScreenCapture", "params": {"displayId": 0}}),
-            # Format F: Image capture request
-            "startImageScreenCaptureRequest",
-            # Format G: RPC framed JSON
-            RPC_HEAD + _json.dumps({"method": "startScreenCapture"}).encode() + RPC_TAIL,
-            # Format H: Length + JSON
-            b"\x00\x00\x00\x3c" + _json.dumps({"method": "startScreenCapture", "params": {"displayId": 0}}).encode(),
-        ]
-
-        for fmt_i, cmd in enumerate(commands, 1):
-            if not server.sim_screen_running:
-                return
-            try:
-                # Reconnect if previous format closed connection
-                if sock is None or _socket_closed(sock):
-                    sock = _reconnect_socket()
-                    if not sock:
-                        continue
-
-                if isinstance(cmd, str):
-                    cmd = cmd.encode("utf-8")
-                server.logger.info("[screen-mirror] fmt%d (%d bytes): %s",
-                                  fmt_i, len(cmd), cmd[:80])
-                sock.sendall(cmd)
-
-                # Read response with generous timeout
-                sock.settimeout(3)
-                try:
-                    resp = sock.recv(65536)
-                    if resp:
-                        server.logger.info("[screen-mirror] fmt%d RESPONSE %d bytes: %s",
-                                          fmt_i, len(resp), resp[:128])
-                        if resp[:2] == b"\xff\xd8" or resp[:4] == b"\x00\x00\x00\x01":
-                            server.logger.info("[screen-mirror] fmt%d got media data!", fmt_i)
-                        buf = resp
-                        break
-                    else:
-                        server.logger.info("[screen-mirror] fmt%d got EOF (connection closed by server)", fmt_i)
-                        sock.close()
-                        sock = None
-                except socket.timeout:
-                    server.logger.info("[screen-mirror] fmt%d timeout (no response)", fmt_i)
-                    # Check if still connected
-                    if _socket_closed(sock):
-                        sock = None
-            except Exception as e:
-                server.logger.info("[screen-mirror] fmt%d error: %s", fmt_i, e)
-                sock = None
-        else:
-            server.logger.warning("[screen-mirror] no command produced a response")
-
-        # Background thread: keep screen changing
-        _last_frame_time = [time.monotonic()]
+    def _snapshot_stream():
+        """Reliable fallback: periodic hdc shell screencap."""
+        server.logger.info("[screen-mirror] using hdc snapshot fallback")
+        frame_count = 0
+        _touch_stop = threading.Event()
 
         def _touch_loop():
             while not _touch_stop.is_set():
                 try:
+                    _hdc_run(["-t", device_id, "shell", "power-shell", "wakeup"], timeout=3)
                     _hdc_run(["-t", device_id, "shell", "uitest", "uiInput",
                               "click", "50", "50"], timeout=3)
                 except Exception:
                     pass
-                _touch_stop.wait(2.0)
+                _touch_stop.wait(3.0)
 
         touch_thread = threading.Thread(target=_touch_loop, daemon=True)
         touch_thread.start()
 
-        server.logger.info("[screen-mirror] waiting for data on socket...")
-
-        # If socket died during format testing, try to reconnect once
-        if not sock or _socket_closed(sock):
-            server.logger.info("[screen-mirror] reconnecting after format testing...")
-            sock = _reconnect_socket()
-            if not sock:
-                server.logger.error("[screen-mirror] reconnect failed")
-                return
-
-        # Read data from socket (buf may already have data from format testing)
+        import tempfile
         while server.sim_screen_running:
             try:
-                chunk = sock.recv(65536)
-                if not chunk:
-                    server.logger.warning("[screen-mirror] socket closed by server")
-                    break
-                buf += chunk
-                _last_frame_time[0] = time.monotonic()
-
-                if frame_count == 0:
-                    server.logger.info("[screen-mirror] first recv: %d bytes, hex: %s",
-                                      len(chunk), chunk[:64].hex())
-
-                # Try to detect if this is JPEG (starts with FFD8) or H.264
-                if chunk[:2] == b"\xff\xd8":
-                    # JPEG image
-                    # Find JPEG end marker FFD9
-                    end_idx = buf.find(b"\xff\xd9")
-                    if end_idx >= 0:
-                        jpeg_data = buf[:end_idx + 2]
-                        buf = buf[end_idx + 2:]
-                        server.sim_screen_jpeg = jpeg_data
-                        frame_count += 1
-                        if frame_count <= 5 or frame_count % 100 == 0:
-                            server.logger.info("[screen-mirror] JPEG frame #%d, %d bytes", frame_count, len(jpeg_data))
-                elif chunk[:4] == b"\x00\x00\x00\x01" or chunk[:3] == b"\x00\x00\x01":
-                    # H.264 NAL unit — decode with PyAV
-                    try:
-                        import av as _av
+                # Capture screenshot via hdc
+                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                tmp.close()
+                r = _hdc_run(["-t", device_id, "shell", "snapshot_display"], timeout=5)
+                if r.returncode == 0 and r.stdout.strip():
+                    # snapshot_display outputs file path
+                    remote_path = r.stdout.strip().split("\n")[-1]
+                    r2 = _hdc_run(["-t", device_id, "file", "recv", remote_path, tmp.name], timeout=5)
+                    if r2.returncode == 0:
                         from PIL import Image
-
-                        if not hasattr(server, '_h264_codec'):
-                            server._h264_codec = _av.CodecContext.create("h264", "r")
-                            server.logger.info("[screen-mirror] H.264 decoder created")
-
-                        # Ensure Annex-B start code
-                        if not chunk.startswith(b"\x00\x00\x00\x01"):
-                            chunk = b"\x00\x00\x00\x01" + chunk
-                        packets = server._h264_codec.parse(chunk)
-                        for pkt in packets:
-                            for frame in server._h264_codec.decode(pkt):
-                                rgb = frame.to_ndarray(format="rgb24")
-                                img = Image.fromarray(rgb, "RGB")
-                                buf_img = io.BytesIO()
-                                img.save(buf_img, format="JPEG", quality=80)
-                                jpeg = buf_img.getvalue()
-                                server.sim_screen_jpeg = jpeg
-                                frame_count += 1
-                                if frame_count <= 5 or frame_count % 100 == 0:
-                                    server.logger.info("[screen-mirror] H264 frame #%d, %d bytes", frame_count, len(jpeg))
-                    except Exception as e:
-                        if frame_count <= 3:
-                            server.logger.warning("[screen-mirror] H264 decode error: %s", e)
-                else:
-                    # Unknown data — might be framed protocol response
-                    # Check for RPC head/tail markers
-                    if RPC_HEAD in buf:
-                        start = buf.find(RPC_HEAD) + len(RPC_HEAD)
-                        tail = buf.find(RPC_TAIL, start)
-                        if tail >= 0:
-                            payload = buf[start:tail]
-                            buf = buf[tail + len(RPC_TAIL):]
-                            server.logger.info("[screen-mirror] RPC response: %s", payload[:200])
-                    elif frame_count == 0 and len(buf) > 0:
-                        server.logger.info("[screen-mirror] unknown data (%d bytes), first 32 hex: %s",
-                                          len(buf), buf[:32].hex())
-
-            except socket.timeout:
-                continue
+                        img = Image.open(tmp.name)
+                        buf = io.BytesIO()
+                        img.save(buf, format="JPEG", quality=70)
+                        server.sim_screen_jpeg = buf.getvalue()
+                        frame_count += 1
+                        if frame_count <= 3 or frame_count % 30 == 0:
+                            server.logger.info("[screen-mirror] snapshot #%d, %d bytes",
+                                              frame_count, len(server.sim_screen_jpeg))
+                        # Clean up remote file
+                        _hdc_run(["-t", device_id, "shell", "rm", "-f", remote_path], timeout=2)
+                try:
+                    import os
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
             except Exception as e:
-                server.logger.warning("[screen-mirror] socket read error: %s", e)
-                break
+                if frame_count <= 3:
+                    server.logger.warning("[screen-mirror] snapshot error: %s", e)
+            # ~2fps
+            for _ in range(20):
+                if not server.sim_screen_running:
+                    break
+                time.sleep(0.1)
 
-    except Exception as e:
-        server.logger.error("[screen-mirror] stream error: %s", e)
-    finally:
         _touch_stop.set()
-        if hasattr(server, '_h264_codec'):
-            try:
-                server._h264_codec.close()
-            except Exception:
-                pass
-            del server._h264_codec
-        if sock:
-            try:
-                sock.close()
-            except Exception:
-                pass
+        return frame_count
+
+    # First try hosscrcpy, fall back to snapshots
+    try:
+        frames = _try_hosscrcpy_stream()
+        if frames and frames > 0:
+            return
+    except Exception as e:
+        server.logger.info("[screen-mirror] hosscrcpy failed: %s, falling back to snapshots", e)
+
+    # Fallback
+    try:
+        _snapshot_stream()
+    finally:
         server.sim_screen_running = False
         _cleanup_hosscrcpy(server, device_id)
-        server.logger.info("[screen-mirror] stream stopped, frames=%d", frame_count)
+        server.logger.info("[screen-mirror] stream stopped")
 
 
 def _sim_send_input(device_id: str, data: dict[str, Any]) -> bool:
