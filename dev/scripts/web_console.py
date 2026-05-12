@@ -198,7 +198,7 @@ def _sim_run(server: Any, device_id: str) -> None:
 
 # ===== Screen mirror: HOScrcpy gRPC H.264 streaming =====
 
-HOSCRCPY_PORT = 5000
+HOSCRCPY_PORT = 8710
 HOSCRCPY_SO_REMOTE = "/data/local/tmp/libscreen_casting.z.so"
 HOSCRCPY_AGENT_REMOTE = "/data/local/tmp/agent.so"
 HOSCRCPY_GRPC_SOCKET = "scrcpy_grpc_socket"
@@ -386,7 +386,10 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
         stub = None
         for attempt in range(3):
             try:
-                channel = _grpc.insecure_channel(f"127.0.0.1:{HOSCRCPY_PORT}")
+                channel = _grpc.insecure_channel(
+                    f"dns:///127.0.0.1:{HOSCRCPY_PORT}",
+                    options=[("grpc.max_receive_message_length", 50 * 1024 * 1024)],
+                )
                 stub = ScrcpyServiceStub(channel)
                 _grpc.channel_ready_future(channel).result(timeout=3)
                 break
@@ -406,34 +409,36 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
 
         server.logger.info("[screen-mirror] %s: gRPC connected!", so_name)
 
-        # Trigger screen change
-        _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "click", "100", "100"], timeout=3)
+        # Request stream FIRST
+        try:
+            stream = stub.onStart(Empty(), timeout=30)
+        except Exception as e:
+            server.logger.info("[screen-mirror] %s: onStart failed: %s", so_name, e)
+            channel.close()
+            return 0
 
-        # Background touch + IDR
+        server.logger.info("[screen-mirror] %s: stream established, sending uinput trace", so_name)
+
+        # Send mouse trace gesture to activate frame capture pipeline
+        # This is what the Java client does in its onReady callback
+        _hdc_run(["-t", device_id, "shell", "uinput", "-M", "-m", "100", "100", "200", "200", "--trace"], timeout=3)
+
+        # Background: periodic uinput trace + IDR request
         _ts = threading.Event()
 
         def _bg():
             while not _ts.is_set():
                 try:
-                    _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "click", "50", "50"], timeout=3)
+                    _hdc_run(["-t", device_id, "shell", "uinput", "-M", "-m", "100", "100", "200", "200", "--trace"], timeout=3)
                 except Exception:
                     pass
                 try:
                     stub.onRequestIDRFrame(Empty(), timeout=5)
                 except Exception:
                     pass
-                _ts.wait(2.0)
+                _ts.wait(3.0)
 
         threading.Thread(target=_bg, daemon=True).start()
-
-        # Request stream
-        try:
-            stream = stub.onStart(Empty(), timeout=30)
-        except Exception as e:
-            server.logger.info("[screen-mirror] %s: onStart failed: %s", so_name, e)
-            _ts.set()
-            channel.close()
-            return 0
 
         # Decode H.264
         import av as _av
