@@ -190,73 +190,154 @@ def _sim_run(server: Any, device_id: str) -> None:
         server.sim_screen_running = False
 
 
-# ===== Screen mirror helpers =====
+# ===== Screen mirror helpers (persistent shell + od hex encoding) =====
 
 REMOTE_SCREENSHOT = "/data/local/tmp/sim_screen.jpeg"
 
 
+def _sim_hex_decode(hex_str: str) -> bytes:
+    """Decode hex string (spaces/newlines stripped) to bytes."""
+    clean = "".join(hex_str.split())
+    if len(clean) % 2 != 0:
+        clean = clean[:-1]
+    return bytes.fromhex(clean) if clean else b""
+
+
+def _sim_read_until_marker(proc: subprocess.Popen, timeout: float = 5.0) -> str:
+    """Read lines from proc stdout until ===END=== marker. Returns accumulated text."""
+    result: list[str] = []
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        line = proc.stdout.readline()
+        if not line:
+            break
+        text = line.decode("ascii", errors="ignore")
+        if "===END===" in text:
+            break
+        result.append(text)
+    return "".join(result)
+
+
+def _sim_get_persistent_shell(server: Any, device_id: str) -> subprocess.Popen | None:
+    """Get or create a persistent hdc shell session."""
+    if server.sim_shell_proc and server.sim_shell_proc.poll() is None:
+        return server.sim_shell_proc
+    try:
+        proc = subprocess.Popen(
+            ["hdc", "-t", device_id, "shell"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            **windows_subprocess_kwargs(),
+        )
+        time.sleep(0.3)
+        # Suppress prompt; try to suppress echo (may not work on all HDC shells)
+        proc.stdin.write(b"PS1=''\n")
+        proc.stdin.write(b"stty -echo 2>/dev/null\n")
+        proc.stdin.flush()
+        time.sleep(0.2)
+        server.sim_shell_proc = proc
+        server.logger.info("[screen-mirror] persistent shell started for device=%s", device_id)
+        return proc
+    except Exception as e:
+        server.logger.error("[screen-mirror] failed to start persistent shell: %s", e)
+        return None
+
+
+def _sim_capture_frame(server: Any, device_id: str) -> bytes | None:
+    """Capture one frame via persistent shell (od hex encoding)."""
+    proc = _sim_get_persistent_shell(server, device_id)
+    if not proc:
+        return None
+    try:
+        # Send command: snapshot + od hex dump + marker
+        cmd = (
+            f"snapshot_display -f {REMOTE_SCREENSHOT} && "
+            f"od -An -tx1 {REMOTE_SCREENSHOT} | sed 's/ //g' && "
+            f"printf '\\n===END===\\n'"
+        ).encode()
+        proc.stdin.write(cmd + b"\n")
+        proc.stdin.flush()
+
+        # Read lines until marker (handles command echo + hex data)
+        hex_text = _sim_read_until_marker(proc, timeout=5.0)
+        data = _sim_hex_decode(hex_text)
+
+        # Cleanup remote file
+        try:
+            proc.stdin.write(f"rm -f {REMOTE_SCREENSHOT}\n".encode())
+            proc.stdin.flush()
+        except Exception:
+            pass
+
+        if len(data) < 100:
+            return None
+        # Verify JPEG header
+        if data[:2] != b'\xff\xd8':
+            return None
+        return data
+    except Exception:
+        server.sim_shell_proc = None
+        return None
+
+
+def _sim_parse_jpeg_resolution(data: bytes) -> tuple[int, int] | None:
+    """Extract width/height from JPEG SOF marker."""
+    try:
+        pos = 2
+        while pos < len(data) - 4:
+            if data[pos] != 0xFF:
+                break
+            marker = data[pos + 1]
+            if marker in (0xC0, 0xC2):
+                h = int.from_bytes(data[pos + 5:pos + 7], 'big')
+                w = int.from_bytes(data[pos + 7:pos + 9], 'big')
+                return (w, h) if w > 0 and h > 0 else None
+            seg_len = int.from_bytes(data[pos + 2:pos + 4], 'big')
+            if seg_len < 2:
+                break
+            pos += 2 + seg_len
+    except Exception:
+        pass
+    return None
+
+
 def _sim_screen_loop(server: Any, device_id: str) -> None:
-    """Background loop: capture device screen at ~300ms intervals."""
+    """Background loop: capture device screen using persistent shell."""
     server.logger.info("[screen-mirror] loop started for device=%s", device_id)
     frame_count = 0
     fail_count = 0
     while server.sim_screen_running:
         try:
-            png = _sim_capture_screen(device_id, server.logger)
-            if png:
-                server.sim_screen_png = png
+            jpeg = _sim_capture_frame(server, device_id)
+            if jpeg:
+                server.sim_screen_jpeg = jpeg
                 frame_count += 1
                 if frame_count <= 3 or frame_count % 50 == 0:
-                    server.logger.info("[screen-mirror] captured frame #%d, size=%d bytes", frame_count, len(png))
-                # Extract resolution from PNG IHDR chunk (bytes 16-23)
-                if len(png) > 24 and png[12:16] == b'IHDR':
-                    w = int.from_bytes(png[16:20], 'big')
-                    h = int.from_bytes(png[20:24], 'big')
-                    if w > 0 and h > 0:
-                        server.sim_screen_resolution = (w, h)
+                    server.logger.info("[screen-mirror] frame #%d, size=%d bytes", frame_count, len(jpeg))
+                res = _sim_parse_jpeg_resolution(jpeg)
+                if res:
+                    server.sim_screen_resolution = res
             else:
                 fail_count += 1
                 if fail_count <= 3 or fail_count % 50 == 0:
-                    server.logger.warning("[screen-mirror] capture returned None (fail #%d)", fail_count)
+                    server.logger.warning("[screen-mirror] capture failed (fail #%d)", fail_count)
         except Exception as e:
             fail_count += 1
             server.logger.error("[screen-mirror] exception: %s", e)
-        time.sleep(0.3)
-    server.logger.info("[screen-mirror] loop stopped, total frames=%d, failures=%d", frame_count, fail_count)
-
-
-def _sim_capture_screen(device_id: str, logger: Any = None) -> bytes | None:
-    """Capture device screen, return JPEG bytes or None."""
-    try:
-        r = _hdc_run(["-t", device_id, "shell", "snapshot_display", "-f", REMOTE_SCREENSHOT], timeout=3)
-        if r.returncode != 0:
-            if logger:
-                logger.warning("[screen-capture] snapshot_display failed: rc=%d stderr=%s", r.returncode, (r.stderr or '').strip())
-            return None
-        with tempfile.NamedTemporaryFile(suffix=".jpeg", delete=False) as tmp:
-            tmp_path = tmp.name
+            server.sim_shell_proc = None
+        time.sleep(0.1)
+    # Cleanup persistent shell
+    if server.sim_shell_proc:
         try:
-            r2 = _hdc_run(["-t", device_id, "file", "recv", REMOTE_SCREENSHOT, tmp_path], timeout=3)
-            if r2.returncode != 0:
-                if logger:
-                    logger.warning("[screen-capture] file recv failed: rc=%d stderr=%s", r2.returncode, (r2.stderr or '').strip())
-                return None
-            with open(tmp_path, "rb") as f:
-                data = f.read()
-            if len(data) < 100:
-                if logger:
-                    logger.warning("[screen-capture] got tiny file: %d bytes", len(data))
-                return None
-            return data
-        finally:
+            server.sim_shell_proc.stdin.write(b"exit\n")
+            server.sim_shell_proc.stdin.flush()
+            server.sim_shell_proc.wait(timeout=2)
+        except Exception:
             try:
-                os.unlink(tmp_path)
-            except OSError:
+                server.sim_shell_proc.kill()
+            except Exception:
                 pass
-    except Exception as e:
-        if logger:
-            logger.error("[screen-capture] exception: %s", e)
-        return None
+        server.sim_shell_proc = None
+    server.logger.info("[screen-mirror] loop stopped, total frames=%d, failures=%d", frame_count, fail_count)
 
 
 def _sim_send_input(device_id: str, data: dict[str, Any]) -> bool:
@@ -960,18 +1041,18 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/sim-build/screen":
-            png = self.server.sim_screen_png
-            if not png:
+            jpeg = self.server.sim_screen_jpeg
+            if not jpeg:
                 self.server.logger.debug("[screen] no frame available yet")
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            self.server.logger.debug("[screen] serving frame, size=%d bytes", len(png))
+            self.server.logger.debug("[screen] serving frame, size=%d bytes", len(jpeg))
             self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "image/png")
-            self.send_header("Content-Length", str(len(png)))
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(jpeg)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(png)
+            self.wfile.write(jpeg)
             return
 
         if parsed.path == "/api/sim-build/resolution":
@@ -1051,10 +1132,22 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "message": "device_id required"}, HTTPStatus.BAD_REQUEST)
                 return
             self.server.logger.info("[screen-mirror] start request for device=%s (already_running=%s)", device_id, self.server.sim_screen_running)
-            # Stop existing screen loop if running for a different device
+            # Stop existing screen loop if running
             if self.server.sim_screen_running:
                 self.server.sim_screen_running = False
                 time.sleep(0.4)
+            # Clean up persistent shell for old device
+            if self.server.sim_shell_proc:
+                try:
+                    self.server.sim_shell_proc.stdin.write(b"exit\n")
+                    self.server.sim_shell_proc.stdin.flush()
+                except Exception:
+                    pass
+                try:
+                    self.server.sim_shell_proc.kill()
+                except Exception:
+                    pass
+                self.server.sim_shell_proc = None
             self.server.sim_screen_running = True
             threading.Thread(target=_sim_screen_loop, args=(self.server, device_id), name="sim-screen", daemon=True).start()
             self._send_json({"ok": True})
@@ -1650,9 +1743,10 @@ class ConsoleServer(ThreadingHTTPServer):
         self.sim_build_logs: list[str] = []
         self.sim_build_step = -1  # current step index, -1 = not started
         # screen mirror state
-        self.sim_screen_png: bytes = b""
+        self.sim_screen_jpeg: bytes = b""
         self.sim_screen_resolution: tuple[int, int] = (0, 0)
         self.sim_screen_running = False
+        self.sim_shell_proc: subprocess.Popen | None = None
         # SQLite database
         self.db_path = repo_root / "dev" / "console.db"
         self._init_db()
