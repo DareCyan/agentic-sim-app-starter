@@ -10,6 +10,7 @@ import re
 import signal
 import socket
 import sqlite3
+import struct
 import tempfile
 import subprocess
 import threading
@@ -188,11 +189,15 @@ def _sim_run(server: Any, device_id: str) -> None:
         server.sim_build_state = "error"
     finally:
         server.sim_screen_running = False
+        _sim_kill_shell(server)
 
 
 # ===== Screen mirror helpers =====
 
 REMOTE_SCREENSHOT = "/data/local/tmp/sim_screen.jpeg"
+SCRCPY_SERVER_REMOTE = "/data/local/tmp/scrcpy_server"
+SCRCPY_PORT = 8000
+SCRCPY_SERVER_BIN_NAME = "scrcpy_server"
 
 
 def _sim_kill_shell(server: Any) -> None:
@@ -258,8 +263,168 @@ def _sim_shell_cmd(proc: subprocess.Popen, cmd: str, timeout: float = 3.0) -> st
     return "".join(result)
 
 
+def _sim_parse_jpeg_resolution(data: bytes) -> tuple[int, int] | None:
+    """Extract width/height from JPEG SOF marker."""
+    try:
+        pos = 2
+        while pos < len(data) - 4:
+            if data[pos] != 0xFF:
+                break
+            marker = data[pos + 1]
+            if marker in (0xC0, 0xC2):
+                h = int.from_bytes(data[pos + 5:pos + 7], 'big')
+                w = int.from_bytes(data[pos + 7:pos + 9], 'big')
+                return (w, h) if w > 0 and h > 0 else None
+            seg_len = int.from_bytes(data[pos + 2:pos + 4], 'big')
+            if seg_len < 2:
+                break
+            pos += 2 + seg_len
+    except Exception:
+        pass
+    return None
+
+
+# ----- TCP streaming (oh-scrcpy) -----
+
+def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
+    """Receive exactly n bytes from socket."""
+    data = b""
+    while len(data) < n:
+        chunk = sock.recv(n - len(data))
+        if not chunk:
+            return data if data else None
+        data += chunk
+    return data
+
+
+def _sim_find_scrcpy_server() -> Path | None:
+    """Find scrcpy_server binary next to this script or in dev/scripts."""
+    script_dir = Path(__file__).resolve().parent
+    candidates = [
+        script_dir / SCRCPY_SERVER_BIN_NAME,
+        script_dir.parent / SCRCPY_SERVER_BIN_NAME,
+        Path(SCRCPY_SERVER_BIN_NAME),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
+def _sim_deploy_scrcpy(server: Any, device_id: str, bin_path: Path) -> None:
+    """Deploy scrcpy_server to device, start it, set up port forwarding."""
+    server.logger.info("[screen-mirror] deploying scrcpy_server from %s", bin_path)
+    # Kill existing server
+    _hdc_run(["-t", device_id, "shell", "pkill", "-9", "scrcpy_server"], timeout=3)
+    time.sleep(0.3)
+    # Remove old binary
+    _hdc_run(["-t", device_id, "shell", "rm", "-f", SCRCPY_SERVER_REMOTE], timeout=3)
+    # Deploy binary
+    r = _hdc_run(["-t", device_id, "file", "send", str(bin_path), SCRCPY_SERVER_REMOTE], timeout=30)
+    if r.returncode != 0:
+        raise RuntimeError(f"file send failed: {r.stderr}")
+    # Make executable
+    _hdc_run(["-t", device_id, "shell", "chmod", "+x", SCRCPY_SERVER_REMOTE], timeout=3)
+    # Start server in background on device
+    _hdc_run(["-t", device_id, "shell", f"{SCRCPY_SERVER_REMOTE}>/dev/null 2>&1 &"], timeout=3)
+    time.sleep(1.5)
+    # Remove existing port forwarding
+    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{SCRCPY_PORT}", f"tcp:{SCRCPY_PORT}"], timeout=3)
+    # Set up port forwarding
+    r = _hdc_run(["-t", device_id, "fport", f"tcp:{SCRCPY_PORT}", f"tcp:{SCRCPY_PORT}"], timeout=5)
+    if r.returncode != 0:
+        raise RuntimeError(f"fport failed: {r.stderr}")
+    server.logger.info("[screen-mirror] scrcpy_server deployed and port forwarded on :%d", SCRCPY_PORT)
+
+
+def _sim_cleanup_scrcpy(server: Any, device_id: str) -> None:
+    """Kill scrcpy_server on device and remove port forwarding."""
+    try:
+        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{SCRCPY_PORT}", f"tcp:{SCRCPY_PORT}"], timeout=3)
+    except Exception:
+        pass
+    try:
+        _hdc_run(["-t", device_id, "shell", "pkill", "-9", "scrcpy_server"], timeout=3)
+    except Exception:
+        pass
+    server.logger.info("[screen-mirror] scrcpy_server cleaned up")
+
+
+def _sim_screen_loop_tcp(server: Any, device_id: str) -> None:
+    """TCP streaming loop: connect to scrcpy_server and receive frames continuously."""
+    server.logger.info("[screen-mirror] TCP loop started for device=%s", device_id)
+    frame_count = 0
+    fail_count = 0
+    sock = None
+    try:
+        # Retry connection a few times (server may need a moment)
+        for attempt in range(5):
+            if not server.sim_screen_running:
+                return
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5.0)
+                sock.connect(("127.0.0.1", SCRCPY_PORT))
+                break
+            except (ConnectionRefusedError, OSError):
+                if sock:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                sock = None
+                if attempt < 4:
+                    server.logger.info("[screen-mirror] TCP connect retry %d/5", attempt + 1)
+                    time.sleep(1.0)
+        if not sock:
+            server.logger.error("[screen-mirror] TCP connect failed after retries")
+            return
+
+        sock.settimeout(15.0)
+        server.logger.info("[screen-mirror] TCP connected to scrcpy_server")
+
+        while server.sim_screen_running:
+            # Read frame size: 4-byte little-endian int (ARM native)
+            size_data = _recv_exact(sock, 4)
+            if not size_data or len(size_data) < 4:
+                fail_count += 1
+                server.logger.warning("[screen-mirror] TCP read size failed, disconnecting")
+                break
+            size = struct.unpack("<i", size_data)[0]
+            if size <= 0 or size > 10 * 1024 * 1024:
+                fail_count += 1
+                server.logger.warning("[screen-mirror] TCP invalid frame size: %d", size)
+                break
+            # Read JPEG payload
+            jpeg = _recv_exact(sock, size)
+            if not jpeg or len(jpeg) < size:
+                fail_count += 1
+                server.logger.warning("[screen-mirror] TCP incomplete frame (got %d/%d)", len(jpeg) if jpeg else 0, size)
+                break
+            server.sim_screen_jpeg = jpeg
+            frame_count += 1
+            if frame_count <= 3 or frame_count % 50 == 0:
+                server.logger.info("[screen-mirror] TCP frame #%d, %d bytes", frame_count, size)
+            res = _sim_parse_jpeg_resolution(jpeg)
+            if res:
+                server.sim_screen_resolution = res
+    except Exception as e:
+        server.logger.error("[screen-mirror] TCP error: %s", e)
+    finally:
+        if sock:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        server.sim_screen_running = False
+        _sim_cleanup_scrcpy(server, device_id)
+        server.logger.info("[screen-mirror] TCP loop stopped, frames=%d, failures=%d", frame_count, fail_count)
+
+
+# ----- snapshot_display fallback -----
+
 def _sim_capture_frame(server: Any, device_id: str) -> bytes | None:
-    """Capture one frame: persistent shell snapshot + hdc file recv."""
+    """Capture one frame: persistent shell snapshot + hdc file recv (slow fallback)."""
     proc = _sim_get_shell(server, device_id)
     if not proc:
         return None
@@ -268,9 +433,7 @@ def _sim_capture_frame(server: Any, device_id: str) -> bytes | None:
             server.logger.warning("[screen-capture] shell dead (rc=%d)", proc.returncode)
             _sim_kill_shell(server)
             return None
-        # Send snapshot command, read output until marker
         _sim_shell_cmd(proc, f"snapshot_display -f {REMOTE_SCREENSHOT}", timeout=3.0)
-        # Transfer file via hdc file recv
         with tempfile.NamedTemporaryFile(suffix=".jpeg", delete=False) as tmp:
             tmp_path = tmp.name
         try:
@@ -295,30 +458,9 @@ def _sim_capture_frame(server: Any, device_id: str) -> bytes | None:
         return None
 
 
-def _sim_parse_jpeg_resolution(data: bytes) -> tuple[int, int] | None:
-    """Extract width/height from JPEG SOF marker."""
-    try:
-        pos = 2
-        while pos < len(data) - 4:
-            if data[pos] != 0xFF:
-                break
-            marker = data[pos + 1]
-            if marker in (0xC0, 0xC2):
-                h = int.from_bytes(data[pos + 5:pos + 7], 'big')
-                w = int.from_bytes(data[pos + 7:pos + 9], 'big')
-                return (w, h) if w > 0 and h > 0 else None
-            seg_len = int.from_bytes(data[pos + 2:pos + 4], 'big')
-            if seg_len < 2:
-                break
-            pos += 2 + seg_len
-    except Exception:
-        pass
-    return None
-
-
-def _sim_screen_loop(server: Any, device_id: str) -> None:
-    """Background loop: capture device screen."""
-    server.logger.info("[screen-mirror] loop started for device=%s", device_id)
+def _sim_screen_loop_snapshot(server: Any, device_id: str) -> None:
+    """Background loop: capture device screen via snapshot_display (slow fallback)."""
+    server.logger.info("[screen-mirror] snapshot loop started for device=%s", device_id)
     frame_count = 0
     fail_count = 0
     while server.sim_screen_running:
@@ -329,20 +471,24 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
             if jpeg:
                 server.sim_screen_jpeg = jpeg
                 frame_count += 1
-                server.logger.warning("[screen-mirror] frame #%d, %d bytes, %.0fms", frame_count, len(jpeg), elapsed * 1000)
+                server.logger.info("[screen-mirror] frame #%d, %d bytes, %.0fms", frame_count, len(jpeg), elapsed * 1000)
                 res = _sim_parse_jpeg_resolution(jpeg)
                 if res:
                     server.sim_screen_resolution = res
             else:
                 fail_count += 1
                 server.logger.warning("[screen-mirror] capture failed #%d (%.0fms)", fail_count, elapsed * 1000)
+                if fail_count > 5:
+                    server.logger.error("[screen-mirror] too many failures, stopping")
+                    break
         except Exception as e:
             fail_count += 1
             server.logger.error("[screen-mirror] exception: %s", e)
             _sim_kill_shell(server)
         time.sleep(0.1)
     _sim_kill_shell(server)
-    server.logger.info("[screen-mirror] loop stopped, total frames=%d, failures=%d", frame_count, fail_count)
+    server.sim_screen_running = False
+    server.logger.info("[screen-mirror] snapshot loop stopped, frames=%d, failures=%d", frame_count, fail_count)
 
 
 def _sim_send_input(device_id: str, data: dict[str, Any]) -> bool:
@@ -1140,11 +1286,24 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             # Stop existing screen loop if running
             if self.server.sim_screen_running:
                 self.server.sim_screen_running = False
-                time.sleep(0.5)
+                time.sleep(1.0)
             _sim_kill_shell(self.server)
+            self.server.sim_screen_jpeg = b""
             self.server.sim_screen_running = True
-            threading.Thread(target=_sim_screen_loop, args=(self.server, device_id), name="sim-screen", daemon=True).start()
-            self._send_json({"ok": True})
+
+            # Try TCP streaming (oh-scrcpy) first, fallback to snapshot_display
+            scrcpy_bin = _sim_find_scrcpy_server()
+            if scrcpy_bin:
+                try:
+                    _sim_deploy_scrcpy(self.server, device_id, scrcpy_bin)
+                    threading.Thread(target=_sim_screen_loop_tcp, args=(self.server, device_id), name="sim-screen-tcp", daemon=True).start()
+                    self._send_json({"ok": True, "mode": "tcp"})
+                    return
+                except Exception as e:
+                    self.server.logger.warning("[screen-mirror] TCP mode failed (%s), falling back to snapshot", e)
+
+            threading.Thread(target=_sim_screen_loop_snapshot, args=(self.server, device_id), name="sim-screen", daemon=True).start()
+            self._send_json({"ok": True, "mode": "snapshot"})
             return
 
         if parsed.path == "/api/sim-build/run":
