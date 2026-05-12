@@ -201,7 +201,7 @@ def _sim_run(server: Any, device_id: str) -> None:
 HOSCRCPY_PORT = 5000
 HOSCRCPY_SO_REMOTE = "/data/local/tmp/libscreen_casting.z.so"
 HOSCRCPY_AGENT_REMOTE = "/data/local/tmp/agent.so"
-HOSCRCPY_GRPC_SOCKET = "scrcpy_grpc_socket"
+UITEST_SOCKET = "uitest_socket"
 
 # Kernel version → .so filename mapping (extracted from hosscrcpy-1.0.15-beta.jar)
 _KERNEL_SO_MAP = {
@@ -243,7 +243,7 @@ def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
     time.sleep(0.5)
 
     # Clean up old port forwarding
-    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=3)
+    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{UITEST_SOCKET}"], timeout=3)
 
     # Check uitest availability
     r = _hdc_run(["-t", device_id, "shell", "/system/bin/uitest", "--version"], timeout=5)
@@ -281,12 +281,12 @@ def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
     if r.returncode != 0 or not r.stdout.strip():
         raise RuntimeError("uitest failed to start on device")
 
-    # Set up port forwarding: TCP port → abstract socket
+    # Set up port forwarding: TCP port → uitest_socket
     _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"tcp:{HOSCRCPY_PORT}"], timeout=3)
-    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=3)
-    r = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=5)
+    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{UITEST_SOCKET}"], timeout=3)
+    r = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{UITEST_SOCKET}"], timeout=5)
     if r.returncode != 0:
-        # Fallback: try TCP-to-TCP forwarding (some devices use TCP server)
+        # Fallback: try TCP-to-TCP forwarding (some devices use TCP server directly)
         r2 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_PORT}", f"tcp:{HOSCRCPY_PORT}"], timeout=5)
         if r2.returncode != 0:
             raise RuntimeError(f"fport failed: {r.stderr}")
@@ -299,7 +299,7 @@ def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
 def _cleanup_hosscrcpy(server: Any, device_id: str) -> None:
     """Stop uitest on device and remove port forwarding."""
     try:
-        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=3)
+        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{UITEST_SOCKET}"], timeout=3)
     except Exception:
         pass
     try:
@@ -318,56 +318,63 @@ def _cleanup_hosscrcpy(server: Any, device_id: str) -> None:
 
 
 def _sim_screen_loop(server: Any, device_id: str) -> None:
-    """H.264 gRPC streaming loop using hosscrcpy protocol."""
-    from scrcpy_pb2 import Empty, ReplyMessage  # noqa: F811
-    import grpc as _grpc
+    """Screen streaming loop using hosscrcpy raw socket protocol."""
+    import socket
+    import json as _json
 
-    server.logger.info("[screen-mirror] gRPC streaming loop started for device=%s", device_id)
+    server.logger.info("[screen-mirror] raw socket streaming loop started for device=%s", device_id)
     frame_count = 0
-    codec_ctx = None
-    decoder_ready = False
-    channel = None
-    stub = None
+    sock = None
     _touch_stop = threading.Event()
 
     try:
-        # Connect gRPC channel
+        # Connect to uitest_socket via port forwarding
         for attempt in range(10):
             if not server.sim_screen_running:
                 return
             try:
-                channel = _grpc.insecure_channel(f"127.0.0.1:{HOSCRCPY_PORT}")
-                # Import generated stubs
-                from scrcpy_pb2_grpc import ScrcpyServiceStub
-                stub = ScrcpyServiceStub(channel)
-                # Quick health check: just try to create the channel
-                _grpc.channel_ready_future(channel).result(timeout=3)
-                server.logger.info("[screen-mirror] gRPC channel connected")
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                sock.settimeout(5)
+                sock.connect(("127.0.0.1", HOSCRCPY_PORT))
+                server.logger.info("[screen-mirror] connected to uitest socket")
                 break
             except Exception as e:
-                if channel:
+                if sock:
                     try:
-                        channel.close()
+                        sock.close()
                     except Exception:
                         pass
-                    channel = None
-                    stub = None
+                    sock = None
                 if attempt < 9:
-                    server.logger.info("[screen-mirror] gRPC connect retry %d/10: %s", attempt + 1, e)
+                    server.logger.info("[screen-mirror] socket connect retry %d/10: %s", attempt + 1, e)
                     time.sleep(1.5)
-        if not stub:
-            server.logger.error("[screen-mirror] gRPC connect failed after retries")
+        if not sock:
+            server.logger.error("[screen-mirror] socket connect failed after retries")
             return
 
-        # Wake screen and trigger a change so server starts sending frames
+        # Wake screen and trigger a change
         _hdc_run(["-t", device_id, "shell", "power-shell", "wakeup"], timeout=3)
         time.sleep(0.5)
         _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "click", "100", "100"], timeout=3)
         time.sleep(0.5)
 
-        # Background thread: keep screen changing so server keeps sending frames
-        _touch_stop = threading.Event()
-        _last_frame_time = [time.monotonic()]  # mutable for closure
+        # Send startCaptureScreen command via uitestkit RPC protocol
+        # Message format: _uitestkit_rpc_message_head_ + JSON + _uitestkit_rpc_message_tail_
+        RPC_HEAD = b"_uitestkit_rpc_message_head_"
+        RPC_TAIL = b"_uitestkit_rpc_message_tail_"
+
+        # Try sending startCaptureScreen command
+        cmd = _json.dumps({
+            "method": "startCaptureScreen",
+            "params": {"displayId": 0}
+        })
+        msg = RPC_HEAD + cmd.encode("utf-8") + RPC_TAIL
+        server.logger.info("[screen-mirror] sending startCaptureScreen command (%d bytes)", len(msg))
+        sock.sendall(msg)
+
+        # Background thread: keep screen changing
+        _last_frame_time = [time.monotonic()]
 
         def _touch_loop():
             while not _touch_stop.is_set():
@@ -376,130 +383,101 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
                               "click", "50", "50"], timeout=3)
                 except Exception:
                     pass
-                # Request IDR keyframe every 5s to help decoder
-                try:
-                    stub.onRequestIDRFrame(Empty(), timeout=5)
-                except Exception:
-                    pass
                 _touch_stop.wait(2.0)
 
         touch_thread = threading.Thread(target=_touch_loop, daemon=True)
         touch_thread.start()
 
-        # Request video stream (long timeout — server only sends when screen changes)
-        server.logger.info("[screen-mirror] requesting onStart stream...")
-        stream = stub.onStart(Empty(), timeout=60)
-        server.logger.info("[screen-mirror] onStart stream established, waiting for data...")
+        server.logger.info("[screen-mirror] waiting for data on socket...")
 
-        # Watchdog: close channel if no frames for 15s (dead stream detection)
-        def _watchdog():
-            while not _touch_stop.is_set():
-                _touch_stop.wait(3)
-                if _touch_stop.is_set():
-                    break
-                elapsed = time.monotonic() - _last_frame_time[0]
-                if elapsed > 15 and frame_count == 0:
-                    server.logger.warning("[screen-mirror] no frames received in %.0fs, closing dead stream", elapsed)
-                    try:
-                        channel.close()
-                    except Exception:
-                        pass
-                    break
-        wd = threading.Thread(target=_watchdog, daemon=True)
-        wd.start()
-
-        # H.264 decoder
-        import av as _av
-        from PIL import Image
-
-        for reply in stream:
-            if not server.sim_screen_running:
-                break
-
-            _last_frame_time[0] = time.monotonic()
-
-            # ReplyMessage: data (string=H.264 frame), reply_type (int), payload (map)
-            frame_bytes = reply.data if reply.data else None
-
-            # Log first message for debugging
-            if frame_count == 0:
-                pl_keys = list(reply.payload.keys()) if reply.payload else []
-                server.logger.info("[screen-mirror] first reply: data=%d bytes, reply_type=%d, payload_keys=%s",
-                                  len(frame_bytes) if frame_bytes else 0, reply.reply_type, pl_keys)
-
-            if not frame_bytes:
-                continue
-
-            # Try to get resolution from payload
-            if reply.payload:
-                try:
-                    w_val = reply.payload.get("width")
-                    h_val = reply.payload.get("height")
-                    if w_val and h_val:
-                        w = int(w_val.val_int or w_val.val_double or 0)
-                        h = int(h_val.val_int or h_val.val_double or 0)
-                        if w > 0 and h > 0:
-                            server.sim_screen_resolution = (w, h)
-                except Exception:
-                    pass
-
-            # Init decoder if needed
-            if not decoder_ready:
-                try:
-                    codec_ctx = _av.CodecContext.create("h264", "r")
-                    # Get SPS/PPS from payload if available
-                    if reply.payload:
-                        sps_val = reply.payload.get("sps")
-                        pps_val = reply.payload.get("pps")
-                        sps = sps_val.val_bytes if sps_val else None
-                        pps = pps_val.val_bytes if pps_val else None
-                        if sps and pps:
-                            extradata = b"\x00\x00\x00\x01" + sps + b"\x00\x00\x00\x01" + pps
-                            codec_ctx.extradata = extradata
-                    decoder_ready = True
-                    server.logger.info("[screen-mirror] H.264 decoder initialized")
-                except Exception as e:
-                    server.logger.error("[screen-mirror] decoder init failed: %s", e)
-                    break
-
-            # Decode frame
+        # Read data from socket
+        buf = b""
+        while server.sim_screen_running:
             try:
-                # Ensure Annex-B start code
-                if not frame_bytes.startswith(b"\x00\x00\x00\x01"):
-                    frame_bytes = b"\x00\x00\x00\x01" + frame_bytes
-                packets = codec_ctx.parse(frame_bytes)
-                for pkt in packets:
-                    for frame in codec_ctx.decode(pkt):
-                        rgb = frame.to_ndarray(format="rgb24")
-                        img = Image.fromarray(rgb, "RGB")
-                        buf = io.BytesIO()
-                        img.save(buf, format="JPEG", quality=80)
-                        jpeg = buf.getvalue()
-                        server.sim_screen_jpeg = jpeg
+                chunk = sock.recv(65536)
+                if not chunk:
+                    server.logger.warning("[screen-mirror] socket closed by server")
+                    break
+                buf += chunk
+                _last_frame_time[0] = time.monotonic()
+
+                if frame_count == 0:
+                    server.logger.info("[screen-mirror] first recv: %d bytes, hex: %s",
+                                      len(chunk), chunk[:64].hex())
+
+                # Try to detect if this is JPEG (starts with FFD8) or H.264
+                if chunk[:2] == b"\xff\xd8":
+                    # JPEG image
+                    # Find JPEG end marker FFD9
+                    end_idx = buf.find(b"\xff\xd9")
+                    if end_idx >= 0:
+                        jpeg_data = buf[:end_idx + 2]
+                        buf = buf[end_idx + 2:]
+                        server.sim_screen_jpeg = jpeg_data
                         frame_count += 1
                         if frame_count <= 5 or frame_count % 100 == 0:
-                            server.logger.info("[screen-mirror] frame #%d, %d bytes", frame_count, len(jpeg))
-                        break
+                            server.logger.info("[screen-mirror] JPEG frame #%d, %d bytes", frame_count, len(jpeg_data))
+                elif chunk[:4] == b"\x00\x00\x00\x01" or chunk[:3] == b"\x00\x00\x01":
+                    # H.264 NAL unit — decode with PyAV
+                    try:
+                        import av as _av
+                        from PIL import Image
+
+                        if not hasattr(server, '_h264_codec'):
+                            server._h264_codec = _av.CodecContext.create("h264", "r")
+                            server.logger.info("[screen-mirror] H.264 decoder created")
+
+                        # Ensure Annex-B start code
+                        if not chunk.startswith(b"\x00\x00\x00\x01"):
+                            chunk = b"\x00\x00\x00\x01" + chunk
+                        packets = server._h264_codec.parse(chunk)
+                        for pkt in packets:
+                            for frame in server._h264_codec.decode(pkt):
+                                rgb = frame.to_ndarray(format="rgb24")
+                                img = Image.fromarray(rgb, "RGB")
+                                buf_img = io.BytesIO()
+                                img.save(buf_img, format="JPEG", quality=80)
+                                jpeg = buf_img.getvalue()
+                                server.sim_screen_jpeg = jpeg
+                                frame_count += 1
+                                if frame_count <= 5 or frame_count % 100 == 0:
+                                    server.logger.info("[screen-mirror] H264 frame #%d, %d bytes", frame_count, len(jpeg))
+                    except Exception as e:
+                        if frame_count <= 3:
+                            server.logger.warning("[screen-mirror] H264 decode error: %s", e)
+                else:
+                    # Unknown data — might be framed protocol response
+                    # Check for RPC head/tail markers
+                    if RPC_HEAD in buf:
+                        start = buf.find(RPC_HEAD) + len(RPC_HEAD)
+                        tail = buf.find(RPC_TAIL, start)
+                        if tail >= 0:
+                            payload = buf[start:tail]
+                            buf = buf[tail + len(RPC_TAIL):]
+                            server.logger.info("[screen-mirror] RPC response: %s", payload[:200])
+                    elif frame_count == 0 and len(buf) > 0:
+                        server.logger.info("[screen-mirror] unknown data (%d bytes), first 32 hex: %s",
+                                          len(buf), buf[:32].hex())
+
+            except socket.timeout:
+                continue
             except Exception as e:
-                if frame_count <= 5 or frame_count % 50 == 0:
-                    server.logger.warning("[screen-mirror] decode error: %s", e)
+                server.logger.warning("[screen-mirror] socket read error: %s", e)
+                break
 
     except Exception as e:
-        code = getattr(e, "code", lambda: None)()
-        if code and code.name == "DEADLINE_EXCEEDED":
-            server.logger.error("[screen-mirror] DEADLINE_EXCEEDED — server sent no data (timeout). Check .so compatibility.")
-        else:
-            server.logger.error("[screen-mirror] stream error: %s", e)
+        server.logger.error("[screen-mirror] stream error: %s", e)
     finally:
         _touch_stop.set()
-        if codec_ctx:
+        if hasattr(server, '_h264_codec'):
             try:
-                codec_ctx.close()
+                server._h264_codec.close()
             except Exception:
                 pass
-        if channel:
+            del server._h264_codec
+        if sock:
             try:
-                channel.close()
+                sock.close()
             except Exception:
                 pass
         server.sim_screen_running = False
