@@ -231,10 +231,6 @@ def _sim_get_shell(server: Any, device_id: str) -> subprocess.Popen | None:
         if proc.poll() is not None:
             server.logger.warning("[screen-mirror] shell exited immediately, rc=%d", proc.returncode)
             return None
-        # Suppress prompt
-        proc.stdin.write(b"PS1=''\n")
-        proc.stdin.flush()
-        time.sleep(0.1)
         server.sim_shell_proc = proc
         server.logger.info("[screen-mirror] shell started (pid=%d)", proc.pid)
         return proc
@@ -243,52 +239,50 @@ def _sim_get_shell(server: Any, device_id: str) -> subprocess.Popen | None:
         return None
 
 
-def _sim_drain_shell(proc: subprocess.Popen, timeout: float = 0.5) -> None:
-    """Drain any pending output from shell stdout (non-blocking)."""
+def _sim_shell_cmd(proc: subprocess.Popen, cmd: str, timeout: float = 3.0) -> str:
+    """Send a command to the persistent shell and read output until marker."""
+    marker = "===DONE==="
+    full_cmd = f"{cmd}; echo {marker}\n"
+    proc.stdin.write(full_cmd.encode())
+    proc.stdin.flush()
+    result: list[str] = []
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         line = proc.stdout.readline()
         if not line:
             break
+        text = line.decode("ascii", errors="ignore")
+        if marker in text:
+            break
+        result.append(text)
+    return "".join(result)
 
 
 def _sim_capture_frame(server: Any, device_id: str) -> bytes | None:
     """Capture one frame: persistent shell snapshot + hdc file recv."""
     proc = _sim_get_shell(server, device_id)
     if not proc:
-        server.logger.warning("[screen-capture] no shell available")
         return None
     try:
         if proc.poll() is not None:
             server.logger.warning("[screen-capture] shell dead (rc=%d)", proc.returncode)
             _sim_kill_shell(server)
             return None
-        # Send snapshot command via persistent shell
-        cmd = f"snapshot_display -f {REMOTE_SCREENSHOT}\n"
-        proc.stdin.write(cmd.encode())
-        proc.stdin.flush()
-        server.logger.warning("[screen-capture] snapshot command sent, waiting...")
-        # Wait for command to complete and drain output
-        time.sleep(0.15)
-        _sim_drain_shell(proc, timeout=0.3)
-        server.logger.warning("[screen-capture] drain done, starting file recv...")
-        # Transfer file via hdc file recv (separate subprocess, preserves binary)
+        # Send snapshot command, read output until marker
+        _sim_shell_cmd(proc, f"snapshot_display -f {REMOTE_SCREENSHOT}", timeout=3.0)
+        # Transfer file via hdc file recv
         with tempfile.NamedTemporaryFile(suffix=".jpeg", delete=False) as tmp:
             tmp_path = tmp.name
         try:
             r = _hdc_run(["-t", device_id, "file", "recv", REMOTE_SCREENSHOT, tmp_path], timeout=3)
             if r.returncode != 0:
-                server.logger.warning("[screen-capture] file recv failed: rc=%d stderr=%s", r.returncode, (r.stderr or '').strip())
                 return None
             with open(tmp_path, "rb") as f:
                 data = f.read()
             if len(data) < 100:
-                server.logger.warning("[screen-capture] file too small: %d bytes", len(data))
                 return None
             if data[:2] != b'\xff\xd8':
-                server.logger.warning("[screen-capture] not JPEG: header=%r", data[:4])
                 return None
-            server.logger.warning("[screen-capture] got JPEG: %d bytes", len(data))
             return data
         finally:
             try:
@@ -329,19 +323,19 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
     fail_count = 0
     while server.sim_screen_running:
         try:
+            t0 = time.monotonic()
             jpeg = _sim_capture_frame(server, device_id)
+            elapsed = time.monotonic() - t0
             if jpeg:
                 server.sim_screen_jpeg = jpeg
                 frame_count += 1
-                if frame_count <= 3 or frame_count % 50 == 0:
-                    server.logger.info("[screen-mirror] frame #%d, size=%d bytes", frame_count, len(jpeg))
+                server.logger.warning("[screen-mirror] frame #%d, %d bytes, %.0fms", frame_count, len(jpeg), elapsed * 1000)
                 res = _sim_parse_jpeg_resolution(jpeg)
                 if res:
                     server.sim_screen_resolution = res
             else:
                 fail_count += 1
-                if fail_count <= 3 or fail_count % 50 == 0:
-                    server.logger.warning("[screen-mirror] capture failed (fail #%d)", fail_count)
+                server.logger.warning("[screen-mirror] capture failed #%d (%.0fms)", fail_count, elapsed * 1000)
         except Exception as e:
             fail_count += 1
             server.logger.error("[screen-mirror] exception: %s", e)
