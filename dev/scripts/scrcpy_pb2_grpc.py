@@ -35,17 +35,17 @@ class ScrcpyServiceStub(object):
             channel: A grpc.Channel.
         """
         self.onStart = channel.unary_stream(
-                '/scrcpy.ScrcpyService/onStart',
+                '/ScrcpyService/onStart',
                 request_serializer=scrcpy__pb2.Empty.SerializeToString,
                 response_deserializer=scrcpy__pb2.ReplyMessage.FromString,
                 _registered_method=True)
         self.onEnd = channel.unary_unary(
-                '/scrcpy.ScrcpyService/onEnd',
+                '/ScrcpyService/onEnd',
                 request_serializer=scrcpy__pb2.Empty.SerializeToString,
                 response_deserializer=scrcpy__pb2.ReplyEndMessage.FromString,
                 _registered_method=True)
         self.onRequestIDRFrame = channel.unary_unary(
-                '/scrcpy.ScrcpyService/onRequestIDRFrame',
+                '/ScrcpyService/onRequestIDRFrame',
                 request_serializer=scrcpy__pb2.Empty.SerializeToString,
                 response_deserializer=scrcpy__pb2.ReplyEndMessage.FromString,
                 _registered_method=True)
@@ -92,9 +92,9 @@ def add_ScrcpyServiceServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'scrcpy.ScrcpyService', rpc_method_handlers)
+            'ScrcpyService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('scrcpy.ScrcpyService', rpc_method_handlers)
+    server.add_registered_method_handlers('ScrcpyService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -115,7 +115,7 @@ class ScrcpyService(object):
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/scrcpy.ScrcpyService/onStart',
+            '/ScrcpyService/onStart',
             scrcpy__pb2.Empty.SerializeToString,
             scrcpy__pb2.ReplyMessage.FromString,
             options,
@@ -142,7 +142,7 @@ class ScrcpyService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/scrcpy.ScrcpyService/onEnd',
+            '/ScrcpyService/onEnd',
             scrcpy__pb2.Empty.SerializeToString,
             scrcpy__pb2.ReplyEndMessage.FromString,
             options,
@@ -169,7 +169,7 @@ class ScrcpyService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/scrcpy.ScrcpyService/onRequestIDRFrame',
+            '/ScrcpyService/onRequestIDRFrame',
             scrcpy__pb2.Empty.SerializeToString,
             scrcpy__pb2.ReplyEndMessage.FromString,
             options,

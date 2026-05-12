@@ -24,25 +24,25 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cscrcpy.proto\x12\x06scrcpy\"\x07\n\x05\x45mpty\"\x91\x01\n\nParamValue\x12\x11\n\x07int_val\x18\x01 \x01(\x05H\x00\x12\x12\n\x08long_val\x18\x02 \x01(\x03H\x00\x12\x13\n\tfloat_val\x18\x03 \x01(\x02H\x00\x12\x14\n\ndouble_val\x18\x04 \x01(\x01H\x00\x12\x14\n\nstring_val\x18\x05 \x01(\tH\x00\x12\x12\n\x08\x62ool_val\x18\x06 \x01(\x08H\x00\x42\x07\n\x05value\"}\n\x0cReplyMessage\x12,\n\x04\x64\x61ta\x18\x01 \x03(\x0b\x32\x1e.scrcpy.ReplyMessage.DataEntry\x1a?\n\tDataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12!\n\x05value\x18\x02 \x01(\x0b\x32\x12.scrcpy.ParamValue:\x02\x38\x01\"\x1f\n\x0fReplyEndMessage\x12\x0c\n\x04\x63ode\x18\x01 \x01(\x05\x32\xaf\x01\n\rScrcpyService\x12\x30\n\x07onStart\x12\r.scrcpy.Empty\x1a\x14.scrcpy.ReplyMessage0\x01\x12/\n\x05onEnd\x12\r.scrcpy.Empty\x1a\x17.scrcpy.ReplyEndMessage\x12;\n\x11onRequestIDRFrame\x12\r.scrcpy.Empty\x1a\x17.scrcpy.ReplyEndMessageb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cscrcpy.proto\"\x9a\x01\n\x0cReplyMessage\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\t\x12\x12\n\nreply_type\x18\x02 \x01(\x05\x12+\n\x07payload\x18\x03 \x03(\x0b\x32\x1a.ReplyMessage.PayloadEntry\x1a;\n\x0cPayloadEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x1a\n\x05value\x18\x02 \x01(\x0b\x32\x0b.ParamValue:\x02\x38\x01\"\x93\x01\n\nParamValue\x12\x11\n\x07val_int\x18\x01 \x01(\x03H\x00\x12\x14\n\nval_double\x18\x02 \x01(\x01H\x00\x12\x14\n\nval_string\x18\x03 \x01(\tH\x00\x12\x12\n\x08val_bool\x18\x04 \x01(\x08H\x00\x12\x13\n\tval_bytes\x18\x05 \x01(\x0cH\x00\x12\x13\n\tval_float\x18\x06 \x01(\x02H\x00\x42\x08\n\x06values\"!\n\x0fReplyEndMessage\x12\x0e\n\x06result\x18\x01 \x01(\x05\"\x07\n\x05\x45mpty2\x85\x01\n\rScrcpyService\x12\"\n\x07onStart\x12\x06.Empty\x1a\r.ReplyMessage0\x01\x12!\n\x05onEnd\x12\x06.Empty\x1a\x10.ReplyEndMessage\x12-\n\x11onRequestIDRFrame\x12\x06.Empty\x1a\x10.ReplyEndMessageb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'scrcpy_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_REPLYMESSAGE_DATAENTRY']._loaded_options = None
-  _globals['_REPLYMESSAGE_DATAENTRY']._serialized_options = b'8\001'
-  _globals['_EMPTY']._serialized_start=24
-  _globals['_EMPTY']._serialized_end=31
-  _globals['_PARAMVALUE']._serialized_start=34
-  _globals['_PARAMVALUE']._serialized_end=179
-  _globals['_REPLYMESSAGE']._serialized_start=181
-  _globals['_REPLYMESSAGE']._serialized_end=306
-  _globals['_REPLYMESSAGE_DATAENTRY']._serialized_start=243
-  _globals['_REPLYMESSAGE_DATAENTRY']._serialized_end=306
-  _globals['_REPLYENDMESSAGE']._serialized_start=308
-  _globals['_REPLYENDMESSAGE']._serialized_end=339
-  _globals['_SCRCPYSERVICE']._serialized_start=342
-  _globals['_SCRCPYSERVICE']._serialized_end=517
+  _globals['_REPLYMESSAGE_PAYLOADENTRY']._loaded_options = None
+  _globals['_REPLYMESSAGE_PAYLOADENTRY']._serialized_options = b'8\001'
+  _globals['_REPLYMESSAGE']._serialized_start=17
+  _globals['_REPLYMESSAGE']._serialized_end=171
+  _globals['_REPLYMESSAGE_PAYLOADENTRY']._serialized_start=112
+  _globals['_REPLYMESSAGE_PAYLOADENTRY']._serialized_end=171
+  _globals['_PARAMVALUE']._serialized_start=174
+  _globals['_PARAMVALUE']._serialized_end=321
+  _globals['_REPLYENDMESSAGE']._serialized_start=323
+  _globals['_REPLYENDMESSAGE']._serialized_end=356
+  _globals['_EMPTY']._serialized_start=358
+  _globals['_EMPTY']._serialized_end=365
+  _globals['_SCRCPYSERVICE']._serialized_start=368
+  _globals['_SCRCPYSERVICE']._serialized_end=501
 # @@protoc_insertion_point(module_scope)

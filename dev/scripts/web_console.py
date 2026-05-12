@@ -371,41 +371,28 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
             if not server.sim_screen_running:
                 break
 
-            # ReplyMessage has a map<string, ParamValue> data field
-            data = reply.data
+            # ReplyMessage: data (string=H.264 frame), reply_type (int), payload (map)
+            frame_bytes = reply.data if reply.data else None
 
-            # Log keys on first message for debugging
-            if frame_count == 0 and data:
-                server.logger.info("[screen-mirror] gRPC data keys: %s", list(data.keys()))
-
-            # Extract video frame: try common key names, fall back to largest string value
-            frame_bytes = None
-            for key in ("frame", "data", "video", "h264"):
-                if key in data:
-                    frame_bytes = data[key].string_val
-                    break
-            if not frame_bytes and data:
-                # Find the key with the largest string value (likely the video data)
-                max_key, max_len = None, 0
-                for k, v in data.items():
-                    sv = v.string_val
-                    if len(sv) > max_len:
-                        max_key, max_len = k, len(sv)
-                if max_key and max_len > 100:
-                    frame_bytes = data[max_key].string_val
-                    if frame_count == 0:
-                        server.logger.info("[screen-mirror] using key '%s' (%d bytes) for video", max_key, max_len)
+            # Log first message for debugging
+            if frame_count == 0:
+                pl_keys = list(reply.payload.keys()) if reply.payload else []
+                server.logger.info("[screen-mirror] first reply: data=%d bytes, reply_type=%d, payload_keys=%s",
+                                  len(frame_bytes) if frame_bytes else 0, reply.reply_type, pl_keys)
 
             if not frame_bytes:
                 continue
 
-            # Try to get resolution info
-            if "width" in data and "height" in data:
+            # Try to get resolution from payload
+            if reply.payload:
                 try:
-                    w = data["width"].int_val
-                    h = data["height"].int_val
-                    if w > 0 and h > 0:
-                        server.sim_screen_resolution = (w, h)
+                    w_val = reply.payload.get("width")
+                    h_val = reply.payload.get("height")
+                    if w_val and h_val:
+                        w = int(w_val.val_int or w_val.val_double or 0)
+                        h = int(h_val.val_int or h_val.val_double or 0)
+                        if w > 0 and h > 0:
+                            server.sim_screen_resolution = (w, h)
                 except Exception:
                     pass
 
@@ -413,12 +400,15 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
             if not decoder_ready:
                 try:
                     codec_ctx = _av.CodecContext.create("h264", "r")
-                    # Get SPS/PPS from stream if available
-                    sps = data.get("sps").string_val if "sps" in data else None
-                    pps = data.get("pps").string_val if "pps" in data else None
-                    if sps and pps:
-                        extradata = b"\x00\x00\x00\x01" + sps + b"\x00\x00\x00\x01" + pps
-                        codec_ctx.extradata = extradata
+                    # Get SPS/PPS from payload if available
+                    if reply.payload:
+                        sps_val = reply.payload.get("sps")
+                        pps_val = reply.payload.get("pps")
+                        sps = sps_val.val_bytes if sps_val else None
+                        pps = pps_val.val_bytes if pps_val else None
+                        if sps and pps:
+                            extradata = b"\x00\x00\x00\x01" + sps + b"\x00\x00\x00\x01" + pps
+                            codec_ctx.extradata = extradata
                     decoder_ready = True
                     server.logger.info("[screen-mirror] H.264 decoder initialized")
                 except Exception as e:
