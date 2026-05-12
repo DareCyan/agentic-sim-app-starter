@@ -203,18 +203,23 @@ def _sim_hex_decode(hex_str: str) -> bytes:
     return bytes.fromhex(clean) if clean else b""
 
 
-def _sim_read_until_marker(proc: subprocess.Popen, timeout: float = 5.0) -> str:
+def _sim_read_until_marker(proc: subprocess.Popen, timeout: float = 5.0, logger: Any = None) -> str:
     """Read lines from proc stdout until ===END=== marker. Returns accumulated text."""
     result: list[str] = []
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         line = proc.stdout.readline()
         if not line:
+            if logger:
+                logger.warning("[screen-capture] drain: EOF from shell")
             break
         text = line.decode("ascii", errors="ignore")
         if "===END===" in text:
             break
         result.append(text)
+    else:
+        if logger:
+            logger.warning("[screen-capture] drain: timeout after %.1fs, got %d lines", timeout, len(result))
     return "".join(result)
 
 
@@ -248,17 +253,17 @@ def _sim_capture_frame(server: Any, device_id: str) -> bytes | None:
     if not proc:
         return None
     try:
-        # Send command: snapshot + od hex dump + marker
+        # Use `;` so marker prints even if od fails
         cmd = (
             f"snapshot_display -f {REMOTE_SCREENSHOT} && "
-            f"od -An -tx1 {REMOTE_SCREENSHOT} | sed 's/ //g' && "
+            f"od -An -tx1 {REMOTE_SCREENSHOT} | sed 's/ //g'; "
             f"printf '\\n===END===\\n'"
         ).encode()
         proc.stdin.write(cmd + b"\n")
         proc.stdin.flush()
 
         # Read lines until marker (handles command echo + hex data)
-        hex_text = _sim_read_until_marker(proc, timeout=5.0)
+        hex_text = _sim_read_until_marker(proc, timeout=5.0, logger=server.logger)
         data = _sim_hex_decode(hex_text)
 
         # Cleanup remote file
@@ -269,12 +274,15 @@ def _sim_capture_frame(server: Any, device_id: str) -> bytes | None:
             pass
 
         if len(data) < 100:
+            server.logger.debug("[screen-capture] decoded data too small: %d bytes, hex_text=%.100r", len(data), hex_text)
             return None
         # Verify JPEG header
         if data[:2] != b'\xff\xd8':
+            server.logger.debug("[screen-capture] not JPEG: first bytes=%r", data[:4])
             return None
         return data
-    except Exception:
+    except Exception as e:
+        server.logger.warning("[screen-capture] frame exception: %s", e)
         server.sim_shell_proc = None
         return None
 
