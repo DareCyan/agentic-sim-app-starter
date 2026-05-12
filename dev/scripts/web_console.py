@@ -103,8 +103,12 @@ def _sim_run(server: Any, device_id: str) -> None:
 
         # Start screen mirror loop (skip if already running for this device)
         if not server.sim_screen_running:
-            server.sim_screen_running = True
-            threading.Thread(target=_sim_screen_loop, args=(server, device_id), name="sim-screen", daemon=True).start()
+            try:
+                _deploy_ohscrcpy(server, device_id)
+                server.sim_screen_running = True
+                threading.Thread(target=_sim_screen_loop, args=(server, device_id), name="sim-screen", daemon=True).start()
+            except Exception as e:
+                server.logger.warning("[screen-mirror] deploy failed in sim_run: %s", e)
 
         # Step 2: uninstall old app
         _sim_log(server, f"[3/{len(steps)}] {steps[2]}: {BUNDLE_NAME}")
@@ -190,59 +194,23 @@ def _sim_run(server: Any, device_id: str) -> None:
         server.sim_build_state = "error"
     finally:
         server.sim_screen_running = False
-        _sim_kill_shell(server)
 
 
-# ===== Screen mirror helpers =====
+# ===== Screen mirror: OHScrcpy H.264 TCP streaming =====
 
-REMOTE_SCREENSHOT = "/data/local/tmp/sim_screen.jpeg"
-SCRCPY_SERVER_REMOTE = "/data/local/tmp/scrcpy_server"
-SCRCPY_PORT = 8000
-SCRCPY_SERVER_BIN_NAME = "scrcpy_server"
+OHSCRCY_PORT = 27183
+OHSCRCY_SERVER_BIN = "ohscrcpy_server"
+OHSCRCY_SERVER_REMOTE = "/system/bin/ohscrcpy_server"
 
+# Packet types (big-endian, matching OHScrcpy protocol)
+PKT_HEARTBEAT = 0
+PKT_SPS = 1
+PKT_PPS = 2
+PKT_KEYFRAME = 3
+PKT_FRAME = 4
+PKT_CONFIG = 5
+PKT_HEADER_SIZE = 8
 
-def _sim_kill_shell(server: Any) -> None:
-    """Forcefully kill the persistent shell."""
-    proc = server.sim_shell_proc
-    if not proc:
-        return
-    server.sim_shell_proc = None
-    try:
-        proc.stdin.close()
-    except Exception:
-        pass
-    try:
-        proc.kill()
-    except Exception:
-        pass
-    try:
-        proc.wait(timeout=1)
-    except Exception:
-        pass
-
-
-def _sim_parse_jpeg_resolution(data: bytes) -> tuple[int, int] | None:
-    """Extract width/height from JPEG SOF marker."""
-    try:
-        pos = 2
-        while pos < len(data) - 4:
-            if data[pos] != 0xFF:
-                break
-            marker = data[pos + 1]
-            if marker in (0xC0, 0xC2):
-                h = int.from_bytes(data[pos + 5:pos + 7], 'big')
-                w = int.from_bytes(data[pos + 7:pos + 9], 'big')
-                return (w, h) if w > 0 and h > 0 else None
-            seg_len = int.from_bytes(data[pos + 2:pos + 4], 'big')
-            if seg_len < 2:
-                break
-            pos += 2 + seg_len
-    except Exception:
-        pass
-    return None
-
-
-# ----- TCP streaming (oh-scrcpy) -----
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
     """Receive exactly n bytes from socket."""
@@ -255,74 +223,110 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
     return data
 
 
-def _sim_find_scrcpy_server() -> Path | None:
-    """Find scrcpy_server binary next to this script or in dev/scripts."""
+def _find_ohscrcpy_server() -> Path | None:
+    """Find ohscrcpy_server binary next to this script."""
     script_dir = Path(__file__).resolve().parent
-    candidates = [
-        script_dir / SCRCPY_SERVER_BIN_NAME,
-        script_dir.parent / SCRCPY_SERVER_BIN_NAME,
-        Path(SCRCPY_SERVER_BIN_NAME),
-    ]
-    for p in candidates:
-        if p.is_file():
-            return p
-    return None
+    p = script_dir / OHSCRCY_SERVER_BIN
+    return p if p.is_file() else None
 
 
-def _sim_deploy_scrcpy(server: Any, device_id: str, bin_path: Path) -> None:
-    """Deploy scrcpy_server to device, start it, set up port forwarding."""
-    server.logger.info("[screen-mirror] deploying scrcpy_server from %s", bin_path)
+def _deploy_ohscrcpy(server: Any, device_id: str) -> None:
+    """Install ohscrcpy_server on device, start it, set up port forwarding."""
+    bin_path = _find_ohscrcpy_server()
+    if not bin_path:
+        raise RuntimeError(f"{OHSCRCY_SERVER_BIN} not found next to web_console.py")
+
+    server.logger.info("[screen-mirror] deploying ohscrcpy_server from %s", bin_path)
+
     # Kill existing server
-    _hdc_run(["-t", device_id, "shell", "pkill", "-9", "scrcpy_server"], timeout=3)
+    _hdc_run(["-t", device_id, "shell", "pkill", "-f", "ohscrcpy_server"], timeout=3)
     time.sleep(0.3)
-    # Remove old binary
-    _hdc_run(["-t", device_id, "shell", "rm", "-f", SCRCPY_SERVER_REMOTE], timeout=3)
-    # Deploy binary
-    r = _hdc_run(["-t", device_id, "file", "send", str(bin_path), SCRCPY_SERVER_REMOTE], timeout=30)
+
+    # Remount system as read-write
+    _hdc_run(["-t", device_id, "target", "mount"], timeout=5)
+
+    # Push binary to device
+    r = _hdc_run(["-t", device_id, "file", "send", str(bin_path), OHSCRCY_SERVER_REMOTE], timeout=30)
     if r.returncode != 0:
         raise RuntimeError(f"file send failed: {r.stderr}")
+
     # Make executable
-    _hdc_run(["-t", device_id, "shell", "chmod", "+x", SCRCPY_SERVER_REMOTE], timeout=3)
+    _hdc_run(["-t", device_id, "shell", "chmod", "+x", OHSCRCY_SERVER_REMOTE], timeout=3)
+
+    # Prepare device: wake up, keep screen on
+    _hdc_run(["-t", device_id, "shell", "power-shell", "wakeup"], timeout=3)
+    _hdc_run(["-t", device_id, "shell", "power-shell", "setmode", "602"], timeout=3)
+    _hdc_run(["-t", device_id, "shell", "power-shell", "timeout", "-o", "86400000"], timeout=3)
+
     # Start server in background on device
-    _hdc_run(["-t", device_id, "shell", f"{SCRCPY_SERVER_REMOTE}>/dev/null 2>&1 &"], timeout=3)
-    time.sleep(1.5)
-    # Remove existing port forwarding
-    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{SCRCPY_PORT}", f"tcp:{SCRCPY_PORT}"], timeout=3)
-    # Set up port forwarding
-    r = _hdc_run(["-t", device_id, "fport", f"tcp:{SCRCPY_PORT}", f"tcp:{SCRCPY_PORT}"], timeout=5)
+    proc = subprocess.Popen(
+        ["hdc", "-t", device_id, "shell", OHSCRCY_SERVER_REMOTE, "-p", str(OHSCRCY_PORT)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        **windows_subprocess_kwargs(),
+    )
+    time.sleep(2.0)
+
+    # Verify server is running
+    r = _hdc_run(["-t", device_id, "shell", "pgrep", "-f", "ohscrcpy_server"], timeout=3)
+    if r.returncode != 0 or not r.stdout.strip():
+        server.logger.error("[screen-mirror] ohscrcpy_server failed to start")
+        raise RuntimeError("ohscrcpy_server failed to start on device")
+    server.logger.info("[screen-mirror] ohscrcpy_server running, PID=%s", r.stdout.strip())
+
+    # Remove old port forwarding, set up new one
+    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{OHSCRCY_PORT}", f"tcp:{OHSCRCY_PORT}"], timeout=3)
+    r = _hdc_run(["-t", device_id, "fport", f"tcp:{OHSCRCY_PORT}", f"tcp:{OHSCRCY_PORT}"], timeout=5)
     if r.returncode != 0:
         raise RuntimeError(f"fport failed: {r.stderr}")
-    server.logger.info("[screen-mirror] scrcpy_server deployed and port forwarded on :%d", SCRCPY_PORT)
+    server.logger.info("[screen-mirror] port forwarding set up on :%d", OHSCRCY_PORT)
+
+    # Store the hdc process so we can clean it up later
+    server._ohscrcpy_hdc_proc = proc
 
 
-def _sim_cleanup_scrcpy(server: Any, device_id: str) -> None:
-    """Kill scrcpy_server on device and remove port forwarding."""
+def _cleanup_ohscrcpy(server: Any, device_id: str) -> None:
+    """Stop ohscrcpy_server on device and remove port forwarding."""
     try:
-        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{SCRCPY_PORT}", f"tcp:{SCRCPY_PORT}"], timeout=3)
+        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{OHSCRCY_PORT}", f"tcp:{OHSCRCY_PORT}"], timeout=3)
     except Exception:
         pass
     try:
-        _hdc_run(["-t", device_id, "shell", "pkill", "-9", "scrcpy_server"], timeout=3)
+        _hdc_run(["-t", device_id, "shell", "pkill", "-f", "ohscrcpy_server"], timeout=3)
     except Exception:
         pass
-    server.logger.info("[screen-mirror] scrcpy_server cleaned up")
+    proc = getattr(server, "_ohscrcpy_hdc_proc", None)
+    if proc:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        server._ohscrcpy_hdc_proc = None
+    server.logger.info("[screen-mirror] ohscrcpy_server cleaned up")
 
 
-def _sim_screen_loop_tcp(server: Any, device_id: str) -> None:
-    """TCP streaming loop: connect to scrcpy_server and receive frames continuously."""
-    server.logger.info("[screen-mirror] TCP loop started for device=%s", device_id)
-    frame_count = 0
-    fail_count = 0
+def _sim_screen_loop(server: Any, device_id: str) -> None:
+    """H.264 TCP streaming loop using OHScrcpy protocol."""
+    import av
+    import numpy as np
+    from PIL import Image
+
+    server.logger.info("[screen-mirror] streaming loop started for device=%s", device_id)
     sock = None
+    frame_count = 0
+    codec_ctx = None
+    sps_data: bytes | None = None
+    pps_data: bytes | None = None
+    decoder_ready = False
+
     try:
-        # Retry connection a few times (server may need a moment)
-        for attempt in range(5):
+        # Connect to server
+        for attempt in range(8):
             if not server.sim_screen_running:
                 return
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(5.0)
-                sock.connect(("127.0.0.1", SCRCPY_PORT))
+                sock.connect(("127.0.0.1", OHSCRCY_PORT))
                 break
             except (ConnectionRefusedError, OSError):
                 if sock:
@@ -331,111 +335,151 @@ def _sim_screen_loop_tcp(server: Any, device_id: str) -> None:
                     except Exception:
                         pass
                 sock = None
-                if attempt < 4:
-                    server.logger.info("[screen-mirror] TCP connect retry %d/5", attempt + 1)
+                if attempt < 7:
+                    server.logger.info("[screen-mirror] connect retry %d/8", attempt + 1)
                     time.sleep(1.0)
         if not sock:
-            server.logger.error("[screen-mirror] TCP connect failed after retries")
+            server.logger.error("[screen-mirror] connect failed after retries")
             return
 
-        sock.settimeout(15.0)
-        server.logger.info("[screen-mirror] TCP connected to scrcpy_server")
+        sock.settimeout(10.0)
+        server.logger.info("[screen-mirror] TCP connected")
+
+        # --- Config handshake ---
+        # Server sends "SCREEN_INFO:W:H:FPS:BITRATE:CODEC\n"
+        config_buf = b""
+        t0 = time.time()
+        while time.time() - t0 < 5.0:
+            chunk = sock.recv(1024)
+            if not chunk:
+                break
+            config_buf += chunk
+            if b"\n" in config_buf:
+                break
+        if b"SCREEN_INFO:" not in config_buf:
+            server.logger.error("[screen-mirror] config handshake failed, got: %s", config_buf[:200])
+            return
+
+        config_line = config_buf.split(b"\n")[0].decode("utf-8", errors="ignore").strip()
+        parts = config_line.split(":")
+        if len(parts) >= 3:
+            w, h = int(parts[1]), int(parts[2])
+            server.sim_screen_resolution = (w, h)
+            server.logger.info("[screen-mirror] config: %s", config_line)
+
+        # Send ACK
+        remaining = config_buf.split(b"\n", 1)[1] if b"\n" in config_buf else b""
+        sock.sendall(b"CONFIG_ACK\n")
+
+        # --- Main streaming loop ---
+        recv_buf = bytearray(remaining)
+        last_heartbeat = time.time()
 
         while server.sim_screen_running:
-            # Read frame size: 4-byte little-endian int (ARM native)
-            size_data = _recv_exact(sock, 4)
-            if not size_data or len(size_data) < 4:
-                fail_count += 1
-                server.logger.warning("[screen-mirror] TCP read size failed, disconnecting")
-                break
-            size = struct.unpack("<i", size_data)[0]
-            if size <= 0 or size > 10 * 1024 * 1024:
-                fail_count += 1
-                server.logger.warning("[screen-mirror] TCP invalid frame size: %d", size)
-                break
-            # Read JPEG payload
-            jpeg = _recv_exact(sock, size)
-            if not jpeg or len(jpeg) < size:
-                fail_count += 1
-                server.logger.warning("[screen-mirror] TCP incomplete frame (got %d/%d)", len(jpeg) if jpeg else 0, size)
-                break
-            server.sim_screen_jpeg = jpeg
-            frame_count += 1
-            if frame_count <= 3 or frame_count % 50 == 0:
-                server.logger.info("[screen-mirror] TCP frame #%d, %d bytes", frame_count, size)
-            res = _sim_parse_jpeg_resolution(jpeg)
-            if res:
-                server.sim_screen_resolution = res
+            # Heartbeat: send every 1s
+            if time.time() - last_heartbeat >= 1.0:
+                try:
+                    sock.sendall(struct.pack(">II", PKT_HEARTBEAT, 0))
+                    last_heartbeat = time.time()
+                except Exception:
+                    break
+
+            # Read data into buffer
+            try:
+                sock.settimeout(2.0)
+                data = sock.recv(256 * 1024)
+                if not data:
+                    break
+                recv_buf.extend(data)
+            except socket.timeout:
+                continue
+
+            # Process complete packets from buffer
+            while len(recv_buf) >= PKT_HEADER_SIZE:
+                pkt_type = struct.unpack(">I", recv_buf[0:4])[0]
+                pkt_len = struct.unpack(">I", recv_buf[4:8])[0]
+
+                if pkt_type not in (PKT_HEARTBEAT, PKT_SPS, PKT_PPS, PKT_KEYFRAME, PKT_FRAME, PKT_CONFIG):
+                    del recv_buf[0:1]
+                    continue
+
+                if pkt_len > 10 * 1024 * 1024:
+                    recv_buf.clear()
+                    continue
+
+                if len(recv_buf) < PKT_HEADER_SIZE + pkt_len:
+                    break  # incomplete packet, wait for more data
+
+                pkt_data = bytes(recv_buf[PKT_HEADER_SIZE:PKT_HEADER_SIZE + pkt_len])
+                del recv_buf[:PKT_HEADER_SIZE + pkt_len]
+
+                # --- Handle packet ---
+                if pkt_type == PKT_HEARTBEAT or pkt_len == 0:
+                    continue
+
+                elif pkt_type == PKT_CONFIG:
+                    if pkt_len >= 16:
+                        vals = struct.unpack(">IIII", pkt_data[0:16])
+                        server.sim_screen_resolution = (vals[0], vals[1])
+                        server.logger.info("[screen-mirror] config update: %dx%d@%dfps", vals[0], vals[1], vals[2])
+
+                elif pkt_type == PKT_SPS:
+                    sps_data = pkt_data
+
+                elif pkt_type == PKT_PPS:
+                    pps_data = pkt_data
+
+                elif pkt_type in (PKT_KEYFRAME, PKT_FRAME):
+                    # Init decoder when both SPS and PPS are available
+                    if not decoder_ready and sps_data and pps_data:
+                        extradata = b"\x00\x00\x00\x01" + sps_data + b"\x00\x00\x00\x01" + pps_data
+                        codec_ctx = av.CodecContext.create("h264", "r")
+                        if server.sim_screen_resolution[0] > 0:
+                            codec_ctx.width = server.sim_screen_resolution[0]
+                            codec_ctx.height = server.sim_screen_resolution[1]
+                        codec_ctx.extradata = extradata
+                        decoder_ready = True
+                        server.logger.info("[screen-mirror] H.264 decoder initialized")
+
+                    if not decoder_ready:
+                        continue
+
+                    # Decode frame
+                    try:
+                        frame_data = b"\x00\x00\x00\x01" + pkt_data if pkt_data[:4] != b"\x00\x00\x00\x01" else pkt_data
+                        packets = codec_ctx.parse(frame_data)
+                        for pkt in packets:
+                            for frame in codec_ctx.decode(pkt):
+                                rgb = frame.to_ndarray(format="rgb24")
+                                img = Image.fromarray(rgb, "RGB")
+                                buf = io.BytesIO()
+                                img.save(buf, format="JPEG", quality=80)
+                                jpeg = buf.getvalue()
+                                server.sim_screen_jpeg = jpeg
+                                frame_count += 1
+                                if frame_count <= 5 or frame_count % 100 == 0:
+                                    server.logger.info("[screen-mirror] frame #%d, %d bytes", frame_count, len(jpeg))
+                                break  # one frame per packet
+                    except Exception as e:
+                        if frame_count <= 5 or frame_count % 50 == 0:
+                            server.logger.warning("[screen-mirror] decode error: %s", e)
+
     except Exception as e:
-        server.logger.error("[screen-mirror] TCP error: %s", e)
+        server.logger.error("[screen-mirror] stream error: %s", e)
     finally:
+        if codec_ctx:
+            try:
+                codec_ctx.close()
+            except Exception:
+                pass
         if sock:
             try:
                 sock.close()
             except Exception:
                 pass
         server.sim_screen_running = False
-        _sim_cleanup_scrcpy(server, device_id)
-        server.logger.info("[screen-mirror] TCP loop stopped, frames=%d, failures=%d", frame_count, fail_count)
-
-
-# ----- snapshot_display fallback -----
-
-def _sim_capture_frame_oneshot(device_id: str) -> bytes | None:
-    """Capture one frame via two one-shot hdc commands. No persistent shell."""
-    # Step 1: snapshot_display writes JPEG to device filesystem
-    r = _hdc_run(["-t", device_id, "shell", "snapshot_display", "-f", REMOTE_SCREENSHOT], timeout=10)
-    if r.returncode != 0:
-        return None
-    # Step 2: pull file to host
-    with tempfile.NamedTemporaryFile(suffix=".jpeg", delete=False) as tmp:
-        tmp_path = tmp.name
-    try:
-        r = _hdc_run(["-t", device_id, "file", "recv", REMOTE_SCREENSHOT, tmp_path], timeout=5)
-        if r.returncode != 0:
-            return None
-        with open(tmp_path, "rb") as f:
-            data = f.read()
-        if len(data) < 100 or data[:2] != b'\xff\xd8':
-            return None
-        return data
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-
-
-def _sim_screen_loop_snapshot(server: Any, device_id: str) -> None:
-    """Background loop: capture device screen via snapshot_display (slow fallback)."""
-    server.logger.info("[screen-mirror] snapshot loop started for device=%s", device_id)
-    frame_count = 0
-    fail_count = 0
-    while server.sim_screen_running:
-        try:
-            t0 = time.monotonic()
-            jpeg = _sim_capture_frame_oneshot(device_id)
-            elapsed = time.monotonic() - t0
-            if jpeg:
-                server.sim_screen_jpeg = jpeg
-                frame_count += 1
-                server.logger.info("[screen-mirror] frame #%d, %d bytes, %.0fms", frame_count, len(jpeg), elapsed * 1000)
-                res = _sim_parse_jpeg_resolution(jpeg)
-                if res:
-                    server.sim_screen_resolution = res
-                fail_count = 0
-            else:
-                fail_count += 1
-                server.logger.warning("[screen-mirror] capture failed #%d (%.0fms)", fail_count, elapsed * 1000)
-                if fail_count > 10:
-                    server.logger.error("[screen-mirror] too many failures, stopping")
-                    break
-        except Exception as e:
-            fail_count += 1
-            server.logger.error("[screen-mirror] exception: %s", e)
-        time.sleep(0.05)
-    server.sim_screen_running = False
-    server.logger.info("[screen-mirror] snapshot loop stopped, frames=%d, failures=%d", frame_count, fail_count)
+        _cleanup_ohscrcpy(server, device_id)
+        server.logger.info("[screen-mirror] stream stopped, frames=%d", frame_count)
 
 
 def _sim_send_input(device_id: str, data: dict[str, Any]) -> bool:
@@ -1234,23 +1278,19 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             if self.server.sim_screen_running:
                 self.server.sim_screen_running = False
                 time.sleep(1.0)
-            _sim_kill_shell(self.server)
+            _cleanup_ohscrcpy(self.server, device_id)
             self.server.sim_screen_jpeg = b""
+            self.server.sim_screen_resolution = (0, 0)
             self.server.sim_screen_running = True
 
-            # Try TCP streaming (oh-scrcpy) first, fallback to snapshot_display
-            scrcpy_bin = _sim_find_scrcpy_server()
-            if scrcpy_bin:
-                try:
-                    _sim_deploy_scrcpy(self.server, device_id, scrcpy_bin)
-                    threading.Thread(target=_sim_screen_loop_tcp, args=(self.server, device_id), name="sim-screen-tcp", daemon=True).start()
-                    self._send_json({"ok": True, "mode": "tcp"})
-                    return
-                except Exception as e:
-                    self.server.logger.warning("[screen-mirror] TCP mode failed (%s), falling back to snapshot", e)
-
-            threading.Thread(target=_sim_screen_loop_snapshot, args=(self.server, device_id), name="sim-screen", daemon=True).start()
-            self._send_json({"ok": True, "mode": "snapshot"})
+            try:
+                _deploy_ohscrcpy(self.server, device_id)
+                threading.Thread(target=_sim_screen_loop, args=(self.server, device_id), name="sim-screen", daemon=True).start()
+                self._send_json({"ok": True, "mode": "ohscrcpy"})
+            except Exception as e:
+                self.server.sim_screen_running = False
+                self.server.logger.error("[screen-mirror] deploy failed: %s", e)
+                self._send_json({"ok": False, "message": str(e)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         if parsed.path == "/api/sim-build/run":
@@ -1846,7 +1886,7 @@ class ConsoleServer(ThreadingHTTPServer):
         self.sim_screen_jpeg: bytes = b""
         self.sim_screen_resolution: tuple[int, int] = (0, 0)
         self.sim_screen_running = False
-        self.sim_shell_proc: subprocess.Popen | None = None
+        self._ohscrcpy_hdc_proc: subprocess.Popen | None = None
         # SQLite database
         self.db_path = repo_root / "dev" / "console.db"
         self._init_db()
