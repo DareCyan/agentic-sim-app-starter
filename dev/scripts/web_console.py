@@ -212,6 +212,18 @@ _KERNEL_SO_MAP = {
 }
 _FALLBACK_SO = "libscrcpy_server0.z.so"
 
+# All .so files to try for gRPC streaming (ordered by likelihood)
+_ALL_SO_FILES = [
+    "libscrcpy_server1.z.so",
+    "libscrcpy_server2.z.so",
+    "libscrcpy_server3.z.so",
+    "libscrcpy_server_5.10-20260114.z.so",
+    "libscrcpy_server_unix_6.3.1-20260113.z.so",
+    "libscrcpy_server_unix_6.4-20260113.z.so",
+    "libscrcpy_server_unix_6.5-20260313.z.so",
+    "libscrcpy_server0.z.so",
+]
+
 
 def _hdc_get_kernel_version(device_id: str) -> str:
     """Get device kernel major.minor version (e.g. '5.10', '6.5')."""
@@ -234,7 +246,7 @@ def _find_hosscrcpy_native() -> Path:
 
 
 def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
-    """Deploy hosscrcpy agent + server .so, start uitest, set up gRPC port forwarding."""
+    """Prepare device for hosscrcpy streaming — deploy agent, wake screen."""
     native_dir = _find_hosscrcpy_native()
 
     # Kill existing uitest daemon
@@ -242,77 +254,28 @@ def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
     _hdc_run(["-t", device_id, "shell", "rm", "-f", HOSCRCPY_SO_REMOTE, HOSCRCPY_AGENT_REMOTE], timeout=3)
     time.sleep(0.5)
 
-    # Clean up old port forwarding
-    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=3)
-    _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"tcp:{HOSCRCPY_PORT}"], timeout=3)
-
     # Check uitest availability
     r = _hdc_run(["-t", device_id, "shell", "/system/bin/uitest", "--version"], timeout=5)
     server.logger.info("[screen-mirror] uitest version: %s (rc=%d)", r.stdout.strip(), r.returncode)
 
-    # Determine kernel version and pick matching .so
     kernel = _hdc_get_kernel_version(device_id)
     server.logger.info("[screen-mirror] device kernel: %s", kernel)
-    so_name = _KERNEL_SO_MAP.get(kernel, _FALLBACK_SO)
-    so_path = native_dir / "libscrcpy" / so_name
-    if not so_path.exists():
-        so_path = native_dir / "libscrcpy" / _FALLBACK_SO
-    server.logger.info("[screen-mirror] using .so: %s", so_path.name)
 
-    # Deploy agent.so — Java SDK deploys this alongside the server
-    agent_names = ["uitest_agent_1.2.3.so", "uitest_agent_1.1.12.so", "uitest_agent_1.1.5.so"]
-    agent_deployed = False
-    for agent_name in agent_names:
+    # Deploy agent.so
+    for agent_name in ["uitest_agent_1.2.3.so", "uitest_agent_1.1.12.so", "uitest_agent_1.1.5.so"]:
         agent_path = native_dir / agent_name
         if agent_path.exists():
-            r = _hdc_run(["-t", device_id, "file", "send", str(agent_path), HOSCRCPY_AGENT_REMOTE], timeout=30)
-            if r.returncode == 0:
-                server.logger.info("[screen-mirror] deployed %s to %s", agent_name, HOSCRCPY_AGENT_REMOTE)
-                agent_deployed = True
-                break
-    if not agent_deployed:
-        server.logger.warning("[screen-mirror] no agent.so found, continuing without it")
-
-    # Deploy server .so to device
-    r = _hdc_run(["-t", device_id, "file", "send", str(so_path), HOSCRCPY_SO_REMOTE], timeout=30)
-    if r.returncode != 0:
-        raise RuntimeError(f"file send failed for {so_name}: {r.stderr}")
-    server.logger.info("[screen-mirror] deployed %s to %s", so_name, HOSCRCPY_SO_REMOTE)
+            _hdc_run(["-t", device_id, "file", "send", str(agent_path), HOSCRCPY_AGENT_REMOTE], timeout=30)
+            server.logger.info("[screen-mirror] deployed %s", agent_name)
+            break
 
     # Prepare device: wake up, keep screen on
     _hdc_run(["-t", device_id, "shell", "power-shell", "wakeup"], timeout=3)
     _hdc_run(["-t", device_id, "shell", "power-shell", "setmode", "602"], timeout=3)
     _hdc_run(["-t", device_id, "shell", "power-shell", "timeout", "-o", "86400000"], timeout=3)
 
-    # Start uitest with extension + config params (matching Java SDK's HosRemoteConfig)
-    # Java passes: -scale 1.0 -frameRate 30 -bitRate 4000000 -p <port> -iFrameInterval 5
-    uitest_cmd = (
-        f"/system/bin/uitest start-daemon singleness"
-        f" --extension-name {HOSCRCPY_SO_REMOTE}"
-        f" -scale 1.0 -frameRate 30 -bitRate 4000000"
-        f" -p {HOSCRCPY_PORT} -iFrameInterval 5 &"
-    )
-    _hdc_run(["-t", device_id, "shell", uitest_cmd], timeout=5)
-    server.logger.info("[screen-mirror] uitest start-daemon sent")
-    time.sleep(2.0)
-
-    # Verify uitest is running
-    r = _hdc_run(["-t", device_id, "shell", "pgrep", "-f", "uitest"], timeout=3)
-    server.logger.info("[screen-mirror] uitest pgrep: rc=%d stdout='%s'", r.returncode, r.stdout.strip())
-    if r.returncode != 0 or not r.stdout.strip():
-        raise RuntimeError("uitest failed to start on device")
-
-    # Set up port forwarding: TCP → scrcpy_grpc_socket (gRPC streaming socket)
-    r = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=5)
-    if r.returncode != 0:
-        # Fallback: TCP-to-TCP (some .so versions listen on TCP directly)
-        r2 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_PORT}", f"tcp:{HOSCRCPY_PORT}"], timeout=5)
-        if r2.returncode != 0:
-            raise RuntimeError(f"fport failed: {r.stderr}")
-    server.logger.info("[screen-mirror] port forwarding set up on :%d", HOSCRCPY_PORT)
-
     server._hosscrcpy_device_id = device_id
-    server.logger.info("[screen-mirror] hosscrcpy deploy complete")
+    server.logger.info("[screen-mirror] device prepared, will try all .so files in streaming loop")
 
 
 def _cleanup_hosscrcpy(server: Any, device_id: str) -> None:
@@ -364,30 +327,70 @@ def _reconnect_socket(port=HOSCRCPY_PORT):
 
 
 def _sim_screen_loop(server: Any, device_id: str) -> None:
-    """Screen streaming loop — try hosscrcpy socket, fall back to hdc snapshots."""
-    import socket
+    """Screen streaming loop — try each .so for gRPC, fall back to hdc snapshots."""
     import json as _json
-    import subprocess
 
-    def _try_hosscrcpy_stream():
-        """Attempt hosscrcpy gRPC H.264 streaming. Returns frame count (0 = failed)."""
+    def _try_so_grpc(so_name):
+        """Deploy a specific .so, start uitest, attempt gRPC streaming. Returns frame count."""
         import grpc as _grpc
         from scrcpy_pb2 import Empty
         from scrcpy_pb2_grpc import ScrcpyServiceStub
 
-        # Connect gRPC channel to scrcpy_grpc_socket (forwarded to localhost:PORT)
+        native_dir = _find_hosscrcpy_native()
+        so_path = native_dir / "libscrcpy" / so_name
+        if not so_path.exists():
+            server.logger.info("[screen-mirror] %s not found, skip", so_name)
+            return 0
+
+        server.logger.info("[screen-mirror] === trying %s ===", so_name)
+
+        # Kill existing uitest
+        _hdc_run(["-t", device_id, "shell", "pkill", "-f", "uitest"], timeout=3)
+        time.sleep(0.5)
+
+        # Deploy this .so
+        _hdc_run(["-t", device_id, "file", "send", str(so_path), HOSCRCPY_SO_REMOTE], timeout=30)
+
+        # Start uitest with config params
+        uitest_cmd = (
+            f"/system/bin/uitest start-daemon singleness"
+            f" --extension-name {HOSCRCPY_SO_REMOTE}"
+            f" -scale 1.0 -frameRate 30 -bitRate 4000000"
+            f" -p {HOSCRCPY_PORT} -iFrameInterval 5 &"
+        )
+        _hdc_run(["-t", device_id, "shell", uitest_cmd], timeout=5)
+        time.sleep(2.0)
+
+        # Verify uitest is running
+        r = _hdc_run(["-t", device_id, "shell", "pgrep", "-f", "uitest"], timeout=3)
+        if r.returncode != 0:
+            server.logger.info("[screen-mirror] %s: uitest not running after start", so_name)
+            return 0
+
+        # Remove old fport, add new
+        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=3)
+        _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_PORT}", f"tcp:{HOSCRCPY_PORT}"], timeout=3)
+
+        r1 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=5)
+        if r1.returncode != 0:
+            r2 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_PORT}", f"tcp:{HOSCRCPY_PORT}"], timeout=5)
+            if r2.returncode != 0:
+                server.logger.info("[screen-mirror] %s: fport failed", so_name)
+                return 0
+
+        # Wake screen
+        _hdc_run(["-t", device_id, "shell", "power-shell", "wakeup"], timeout=3)
+
+        # Try gRPC connection (quick — 3 retries with short timeout)
         channel = None
         stub = None
-        for attempt in range(10):
-            if not server.sim_screen_running:
-                return 0
+        for attempt in range(3):
             try:
                 channel = _grpc.insecure_channel(f"127.0.0.1:{HOSCRCPY_PORT}")
                 stub = ScrcpyServiceStub(channel)
                 _grpc.channel_ready_future(channel).result(timeout=3)
-                server.logger.info("[screen-mirror] gRPC channel connected")
                 break
-            except Exception as e:
+            except Exception:
                 if channel:
                     try:
                         channel.close()
@@ -395,24 +398,22 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
                         pass
                     channel = None
                     stub = None
-                if attempt < 9:
-                    server.logger.info("[screen-mirror] gRPC retry %d/10: %s", attempt + 1, e)
-                    time.sleep(1.5)
+                time.sleep(1.0)
+
         if not stub:
-            server.logger.error("[screen-mirror] gRPC connect failed")
+            server.logger.info("[screen-mirror] %s: gRPC channel failed", so_name)
             return 0
 
-        # Wake screen and trigger initial change
-        _hdc_run(["-t", device_id, "shell", "power-shell", "wakeup"], timeout=3)
-        time.sleep(0.5)
+        server.logger.info("[screen-mirror] %s: gRPC connected!", so_name)
+
+        # Trigger screen change
         _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "click", "100", "100"], timeout=3)
-        time.sleep(0.5)
 
-        # Background touch to keep frames flowing
-        _touch_stop_local = threading.Event()
+        # Background touch + IDR
+        _ts = threading.Event()
 
-        def _touch():
-            while not _touch_stop_local.is_set():
+        def _bg():
+            while not _ts.is_set():
                 try:
                     _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "click", "50", "50"], timeout=3)
                 except Exception:
@@ -421,15 +422,20 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
                     stub.onRequestIDRFrame(Empty(), timeout=5)
                 except Exception:
                     pass
-                _touch_stop_local.wait(2.0)
+                _ts.wait(2.0)
 
-        threading.Thread(target=_touch, daemon=True).start()
+        threading.Thread(target=_bg, daemon=True).start()
 
-        # Start H.264 stream
-        server.logger.info("[screen-mirror] requesting onStart stream...")
-        stream = stub.onStart(Empty(), timeout=60)
-        server.logger.info("[screen-mirror] stream established, decoding...")
+        # Request stream
+        try:
+            stream = stub.onStart(Empty(), timeout=30)
+        except Exception as e:
+            server.logger.info("[screen-mirror] %s: onStart failed: %s", so_name, e)
+            _ts.set()
+            channel.close()
+            return 0
 
+        # Decode H.264
         import av as _av
         from PIL import Image
         codec_ctx = _av.CodecContext.create("h264", "r")
@@ -441,26 +447,9 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
             frame_bytes = reply.data if reply.data else None
             if not frame_bytes:
                 continue
-
             if frame_count == 0:
-                pl_keys = list(reply.payload.keys()) if reply.payload else []
-                server.logger.info("[screen-mirror] first frame: %d bytes, type=%d, payload=%s",
-                                  len(frame_bytes), reply.reply_type, pl_keys)
-
-            # Resolution from payload
-            if reply.payload:
-                try:
-                    w_val = reply.payload.get("width")
-                    h_val = reply.payload.get("height")
-                    if w_val and h_val:
-                        w = int(w_val.val_int or w_val.val_double or 0)
-                        h = int(h_val.val_int or h_val.val_double or 0)
-                        if w > 0 and h > 0:
-                            server.sim_screen_resolution = (w, h)
-                except Exception:
-                    pass
-
-            # Decode H.264 → JPEG
+                server.logger.info("[screen-mirror] %s: FIRST FRAME! %d bytes, type=%d",
+                                  so_name, len(frame_bytes), reply.reply_type)
             try:
                 if not frame_bytes.startswith(b"\x00\x00\x00\x01"):
                     frame_bytes = b"\x00\x00\x00\x01" + frame_bytes
@@ -473,23 +462,22 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
                         server.sim_screen_jpeg = buf.getvalue()
                         frame_count += 1
                         if frame_count <= 5 or frame_count % 100 == 0:
-                            server.logger.info("[screen-mirror] frame #%d, %d bytes", frame_count, len(server.sim_screen_jpeg))
+                            server.logger.info("[screen-mirror] %s: frame #%d", so_name, frame_count)
                         break
             except Exception as e:
-                if frame_count <= 5:
-                    server.logger.warning("[screen-mirror] decode error: %s", e)
+                if frame_count <= 3:
+                    server.logger.warning("[screen-mirror] %s: decode: %s", so_name, e)
 
-        _touch_stop_local.set()
-        if codec_ctx:
-            try:
-                codec_ctx.close()
-            except Exception:
-                pass
-        if channel:
-            try:
-                channel.close()
-            except Exception:
-                pass
+        _ts.set()
+        try:
+            codec_ctx.close()
+        except Exception:
+            pass
+        try:
+            channel.close()
+        except Exception:
+            pass
+        server.logger.info("[screen-mirror] %s: got %d frames total", so_name, frame_count)
         return frame_count
 
     def _snapshot_stream():
@@ -548,13 +536,23 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
         _touch_stop.set()
         return frame_count
 
-    # First try hosscrcpy, fall back to snapshots
-    try:
-        frames = _try_hosscrcpy_stream()
-        if frames and frames > 0:
+    # Try each .so file for gRPC streaming
+    for so_name in _ALL_SO_FILES:
+        if not server.sim_screen_running:
             return
-    except Exception as e:
-        server.logger.info("[screen-mirror] hosscrcpy failed: %s, falling back to snapshots", e)
+        try:
+            frames = _try_so_grpc(so_name)
+            if frames and frames > 0:
+                # Found a working .so — stream ended, do cleanup
+                server.sim_screen_running = False
+                _cleanup_hosscrcpy(server, device_id)
+                server.logger.info("[screen-mirror] stream ended with %s, frames=%d", so_name, frames)
+                return
+        except Exception as e:
+            server.logger.info("[screen-mirror] %s failed: %s", so_name, e)
+            continue
+
+    server.logger.warning("[screen-mirror] no .so produced gRPC frames, using snapshot fallback")
 
     # Fallback
     try:
