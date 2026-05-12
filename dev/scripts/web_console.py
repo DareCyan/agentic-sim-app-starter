@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import io
 import json
@@ -380,29 +381,30 @@ def _sim_screen_loop_tcp(server: Any, device_id: str) -> None:
 
 # ----- snapshot_display fallback -----
 
-def _sim_capture_frame_oneshot(device_id: str) -> bytes | None:
-    """Capture one frame via one-shot hdc commands. No persistent shell."""
-    # Step 1: snapshot_display writes JPEG to device filesystem
-    r = _hdc_run(["-t", device_id, "shell", "snapshot_display", "-f", REMOTE_SCREENSHOT], timeout=10)
-    if r.returncode != 0:
-        return None
-    # Step 2: pull file to host
-    with tempfile.NamedTemporaryFile(suffix=".jpeg", delete=False) as tmp:
-        tmp_path = tmp.name
+def _sim_capture_frame_b64(device_id: str) -> bytes | None:
+    """Capture one frame: single hdc shell command, snapshot + base64 output.
+    Avoids the overhead of separate hdc file recv by piping JPEG through base64."""
     try:
-        r = _hdc_run(["-t", device_id, "file", "recv", REMOTE_SCREENSHOT, tmp_path], timeout=5)
-        if r.returncode != 0:
-            return None
-        with open(tmp_path, "rb") as f:
-            data = f.read()
-        if len(data) < 100 or data[:2] != b'\xff\xd8':
-            return None
-        return data
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        r = subprocess.run(
+            ["hdc", "-t", device_id, "shell",
+             f"snapshot_display -f {REMOTE_SCREENSHOT} && base64 {REMOTE_SCREENSHOT}"],
+            capture_output=True, timeout=10,
+            **windows_subprocess_kwargs(),
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if r.returncode != 0 or not r.stdout:
+        return None
+    b64_text = r.stdout.replace(b'\n', b'').replace(b'\r', b'').replace(b' ', b'')
+    if not b64_text:
+        return None
+    try:
+        jpeg = base64.b64decode(b64_text)
+    except Exception:
+        return None
+    if len(jpeg) < 100 or jpeg[:2] != b'\xff\xd8':
+        return None
+    return jpeg
 
 
 def _sim_screen_loop_snapshot(server: Any, device_id: str) -> None:
@@ -413,7 +415,7 @@ def _sim_screen_loop_snapshot(server: Any, device_id: str) -> None:
     while server.sim_screen_running:
         try:
             t0 = time.monotonic()
-            jpeg = _sim_capture_frame_oneshot(device_id)
+            jpeg = _sim_capture_frame_b64(device_id)
             elapsed = time.monotonic() - t0
             if jpeg:
                 server.sim_screen_jpeg = jpeg
@@ -432,7 +434,7 @@ def _sim_screen_loop_snapshot(server: Any, device_id: str) -> None:
         except Exception as e:
             fail_count += 1
             server.logger.error("[screen-mirror] exception: %s", e)
-        time.sleep(0.3)
+        time.sleep(0.05)
     server.sim_screen_running = False
     server.logger.info("[screen-mirror] snapshot loop stopped, frames=%d, failures=%d", frame_count, fail_count)
 
