@@ -256,6 +256,7 @@ def _sim_capture_frame(server: Any, device_id: str) -> bytes | None:
     """Capture one frame: persistent shell snapshot + hdc file recv."""
     proc = _sim_get_shell(server, device_id)
     if not proc:
+        server.logger.warning("[screen-capture] no shell available")
         return None
     try:
         if proc.poll() is not None:
@@ -266,22 +267,28 @@ def _sim_capture_frame(server: Any, device_id: str) -> bytes | None:
         cmd = f"snapshot_display -f {REMOTE_SCREENSHOT}\n"
         proc.stdin.write(cmd.encode())
         proc.stdin.flush()
+        server.logger.warning("[screen-capture] snapshot command sent, waiting...")
         # Wait for command to complete and drain output
         time.sleep(0.15)
         _sim_drain_shell(proc, timeout=0.3)
+        server.logger.warning("[screen-capture] drain done, starting file recv...")
         # Transfer file via hdc file recv (separate subprocess, preserves binary)
         with tempfile.NamedTemporaryFile(suffix=".jpeg", delete=False) as tmp:
             tmp_path = tmp.name
         try:
             r = _hdc_run(["-t", device_id, "file", "recv", REMOTE_SCREENSHOT, tmp_path], timeout=3)
             if r.returncode != 0:
+                server.logger.warning("[screen-capture] file recv failed: rc=%d stderr=%s", r.returncode, (r.stderr or '').strip())
                 return None
             with open(tmp_path, "rb") as f:
                 data = f.read()
             if len(data) < 100:
+                server.logger.warning("[screen-capture] file too small: %d bytes", len(data))
                 return None
             if data[:2] != b'\xff\xd8':
+                server.logger.warning("[screen-capture] not JPEG: header=%r", data[:4])
                 return None
+            server.logger.warning("[screen-capture] got JPEG: %d bytes", len(data))
             return data
         finally:
             try:
