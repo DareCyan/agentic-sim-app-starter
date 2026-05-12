@@ -200,7 +200,7 @@ def _sim_run(server: Any, device_id: str) -> None:
 
 OHSCRCY_PORT = 27183
 OHSCRCY_SERVER_BIN = "ohscrcpy_server"
-OHSCRCY_SERVER_REMOTE = "/system/bin/ohscrcpy_server"
+OHSCRCY_SERVER_REMOTE = "/data/local/tmp/ohscrcpy_server"
 
 # Packet types (big-endian, matching OHScrcpy protocol)
 PKT_HEARTBEAT = 0
@@ -241,9 +241,6 @@ def _deploy_ohscrcpy(server: Any, device_id: str) -> None:
     # Kill existing server
     _hdc_run(["-t", device_id, "shell", "pkill", "-f", "ohscrcpy_server"], timeout=3)
     time.sleep(0.3)
-
-    # Remount system as read-write
-    _hdc_run(["-t", device_id, "target", "mount"], timeout=5)
 
     # Push binary to device
     r = _hdc_run(["-t", device_id, "file", "send", str(bin_path), OHSCRCY_SERVER_REMOTE], timeout=30)
