@@ -249,9 +249,15 @@ def _deploy_ohscrcpy(server: Any, device_id: str) -> None:
     r = _hdc_run(["-t", device_id, "file", "send", str(bin_path), OHSCRCY_SERVER_REMOTE], timeout=30)
     if r.returncode != 0:
         raise RuntimeError(f"file send failed: {r.stderr}")
+    server.logger.info("[screen-mirror] file send ok: %s", r.stdout.strip())
 
     # Make executable
-    _hdc_run(["-t", device_id, "shell", "chmod", "+x", OHSCRCY_SERVER_REMOTE], timeout=3)
+    r = _hdc_run(["-t", device_id, "shell", "chmod", "+x", OHSCRCY_SERVER_REMOTE], timeout=3)
+    server.logger.info("[screen-mirror] chmod: rc=%d stdout=%s stderr=%s", r.returncode, r.stdout.strip(), r.stderr.strip())
+
+    # Verify binary is there and executable
+    r = _hdc_run(["-t", device_id, "shell", "ls", "-la", OHSCRCY_SERVER_REMOTE], timeout=3)
+    server.logger.info("[screen-mirror] ls: %s", r.stdout.strip())
 
     # Prepare device: wake up, keep screen on
     _hdc_run(["-t", device_id, "shell", "power-shell", "wakeup"], timeout=3)
@@ -266,10 +272,19 @@ def _deploy_ohscrcpy(server: Any, device_id: str) -> None:
     )
     time.sleep(2.0)
 
+    # Check what the server process outputted
+    server_out = proc.stdout.read1(4096) if hasattr(proc.stdout, 'read1') else b""
+    server_err = proc.stderr.read1(4096) if hasattr(proc.stderr, 'read1') else b""
+    server.logger.info("[screen-mirror] server proc stdout=%s stderr=%s", server_out[:500], server_err[:500])
+
     # Verify server is running
     r = _hdc_run(["-t", device_id, "shell", "pgrep", "-f", "ohscrcpy_server"], timeout=3)
+    server.logger.info("[screen-mirror] pgrep: rc=%d stdout='%s' stderr='%s'", r.returncode, r.stdout.strip(), r.stderr.strip())
     if r.returncode != 0 or not r.stdout.strip():
-        server.logger.error("[screen-mirror] ohscrcpy_server failed to start")
+        # Try ps as alternative
+        r2 = _hdc_run(["-t", device_id, "shell", "ps", "-ef"], timeout=3)
+        server.logger.info("[screen-mirror] ps grep ohscrcpy: %s",
+                          "\n".join(l for l in r2.stdout.splitlines() if "ohscrcpy" in l))
         raise RuntimeError("ohscrcpy_server failed to start on device")
     server.logger.info("[screen-mirror] ohscrcpy_server running, PID=%s", r.stdout.strip())
 
