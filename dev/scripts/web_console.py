@@ -359,19 +359,79 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
         _hdc_run(["-t", device_id, "shell", "uitest", "uiInput", "click", "100", "100"], timeout=3)
         time.sleep(0.5)
 
-        # Send startCaptureScreen command via uitestkit RPC protocol
-        # Message format: _uitestkit_rpc_message_head_ + JSON + _uitestkit_rpc_message_tail_
+        buf = b""
+
+        # Send startCaptureScreen command — try multiple formats
+        # The Java SDK communicates via uitestkit RPC over localabstract:uitest_socket
         RPC_HEAD = b"_uitestkit_rpc_message_head_"
         RPC_TAIL = b"_uitestkit_rpc_message_tail_"
 
-        # Try sending startCaptureScreen command
-        cmd = _json.dumps({
-            "method": "startCaptureScreen",
-            "params": {"displayId": 0}
-        })
-        msg = RPC_HEAD + cmd.encode("utf-8") + RPC_TAIL
-        server.logger.info("[screen-mirror] sending startCaptureScreen command (%d bytes)", len(msg))
-        sock.sendall(msg)
+        # Format 1: Raw JSON
+        cmd1 = _json.dumps({"method": "startCaptureScreen", "params": {"displayId": 0}})
+        # Format 2: JSON with newline
+        cmd2 = cmd1 + "\n"
+        # Format 3: Length-prefixed JSON
+        cmd3 = len(cmd1).to_bytes(4, "big") + cmd1.encode("utf-8")
+        # Format 4: RPC-framed JSON (what we tried before — likely wrong)
+        cmd4 = RPC_HEAD + cmd1.encode("utf-8") + RPC_TAIL
+        # Format 5: Just the method name
+        cmd5 = "startCaptureScreen"
+        # Format 6: JSON with action field
+        cmd6 = _json.dumps({"action": "startCaptureScreen", "displayId": 0})
+
+        for fmt_i, cmd in enumerate([cmd1, cmd2, cmd3, cmd4, cmd5, cmd6], 1):
+            if not server.sim_screen_running:
+                return
+            try:
+                if isinstance(cmd, str):
+                    cmd = cmd.encode("utf-8")
+                server.logger.info("[screen-mirror] trying format %d (%d bytes): %s",
+                                  fmt_i, len(cmd), cmd[:80])
+                sock.sendall(cmd)
+                # Wait briefly for response or connection close
+                time.sleep(1.0)
+                # Check if still connected by trying a non-blocking recv
+                sock.settimeout(0.5)
+                try:
+                    test = sock.recv(1024)
+                    if test:
+                        server.logger.info("[screen-mirror] format %d got response: %d bytes, hex: %s",
+                                          fmt_i, len(test), test[:64].hex())
+                        # Put data back — we'll process it in the main loop
+                        buf = test
+                        break
+                except socket.timeout:
+                    pass
+                except Exception:
+                    server.logger.info("[screen-mirror] format %d caused connection close", fmt_i)
+                    # Reconnect for next format
+                    sock.close()
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    sock.settimeout(5)
+                    sock.connect(("127.0.0.1", HOSCRCPY_PORT))
+                    continue
+                # Check if still connected
+                sock.settimeout(0.1)
+                try:
+                    sock.recv(1)
+                except socket.timeout:
+                    # Still connected, try next format
+                    continue
+                except Exception:
+                    # Connection closed
+                    server.logger.info("[screen-mirror] format %d closed connection", fmt_i)
+                    sock.close()
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    sock.settimeout(5)
+                    sock.connect(("127.0.0.1", HOSCRCPY_PORT))
+                    continue
+            except Exception as e:
+                server.logger.info("[screen-mirror] format %d error: %s", fmt_i, e)
+                continue
+        else:
+            server.logger.warning("[screen-mirror] no format produced a response")
 
         # Background thread: keep screen changing
         _last_frame_time = [time.monotonic()]
@@ -390,8 +450,7 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
 
         server.logger.info("[screen-mirror] waiting for data on socket...")
 
-        # Read data from socket
-        buf = b""
+        # Read data from socket (buf may already have data from format testing)
         while server.sim_screen_running:
             try:
                 chunk = sock.recv(65536)
