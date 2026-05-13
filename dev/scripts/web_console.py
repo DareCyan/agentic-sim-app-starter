@@ -589,37 +589,41 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
         _touch_stop.set()
         return frame_count
 
-    # Select .so list based on uitest version (match Java logic)
-    uitest_ver = getattr(server, "_uitest_version", "")
-    try:
-        ver_parts = [int(x) for x in uitest_ver.split(".")]
-        if ver_parts >= [6, 0, 2, 2]:
-            so_list = _UNIX_SO_FILES
-        else:
-            so_list = _HONGMENG_SO_FILES
-    except (ValueError, IndexError):
-        so_list = _UNIX_SO_FILES + _HONGMENG_SO_FILES
-    server.logger.info("[screen-mirror] uitest=%s, trying %d .so files: %s",
-                      uitest_ver, len(so_list), so_list)
+    # --- gRPC streaming disabled (kernel compatibility issue), use snapshot ---
+    # To re-enable gRPC, set USE_GRPC = True below.
+    USE_GRPC = False
 
-    for so_name in so_list:
-        if not server.sim_screen_running:
-            return
+    if USE_GRPC:
+        # Select .so list based on uitest version (match Java logic)
+        uitest_ver = getattr(server, "_uitest_version", "")
         try:
-            frames = _try_so_grpc(so_name)
-            if frames and frames > 0:
-                # Found a working .so — stream ended, do cleanup
-                server.sim_screen_running = False
-                _cleanup_hosscrcpy(server, device_id)
-                server.logger.info("[screen-mirror] stream ended with %s, frames=%d", so_name, frames)
+            ver_parts = [int(x) for x in uitest_ver.split(".")]
+            if ver_parts >= [6, 0, 2, 2]:
+                so_list = _UNIX_SO_FILES
+            else:
+                so_list = _HONGMENG_SO_FILES
+        except (ValueError, IndexError):
+            so_list = _UNIX_SO_FILES + _HONGMENG_SO_FILES
+        server.logger.info("[screen-mirror] uitest=%s, trying %d .so files: %s",
+                          uitest_ver, len(so_list), so_list)
+
+        for so_name in so_list:
+            if not server.sim_screen_running:
                 return
-        except Exception as e:
-            server.logger.info("[screen-mirror] %s failed: %s", so_name, e)
-            continue
+            try:
+                frames = _try_so_grpc(so_name)
+                if frames and frames > 0:
+                    server.sim_screen_running = False
+                    _cleanup_hosscrcpy(server, device_id)
+                    server.logger.info("[screen-mirror] stream ended with %s, frames=%d", so_name, frames)
+                    return
+            except Exception as e:
+                server.logger.info("[screen-mirror] %s failed: %s", so_name, e)
+                continue
 
-    server.logger.warning("[screen-mirror] no .so produced gRPC frames, using snapshot fallback")
+        server.logger.warning("[screen-mirror] no .so produced gRPC frames, using snapshot fallback")
 
-    # Fallback
+    # Snapshot mode
     try:
         _snapshot_stream()
     finally:
