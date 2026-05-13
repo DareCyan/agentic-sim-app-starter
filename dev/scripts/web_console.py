@@ -343,8 +343,7 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
             server.logger.info("[screen-mirror] %s not found, skip", so_name)
             return 0
 
-        is_unix_so = "unix" in so_name
-        server.logger.info("[screen-mirror] === trying %s (unix=%s) ===", so_name, is_unix_so)
+        server.logger.info("[screen-mirror] === trying %s ===", so_name)
 
         # Kill existing uitest
         _hdc_run(["-t", device_id, "shell", "pkill", "-f", "uitest"], timeout=3)
@@ -373,24 +372,21 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
         _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=3)
         _hdc_run(["-t", device_id, "fport", "rm", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"tcp:{HOSCRCPY_DEVICE_PORT}"], timeout=3)
 
-        # fport: Unix .so → abstract socket, non-Unix .so → TCP port
-        if is_unix_so:
-            r1 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=5)
-            if r1.returncode != 0:
-                server.logger.info("[screen-mirror] %s: abstract socket fport failed", so_name)
-                return 0
-            server.logger.info("[screen-mirror] %s: fport abstract socket mode", so_name)
+        # fport: always try abstract socket first (uitest >= 6.0.2.1 uses abstract socket),
+        # fallback to TCP port 5000
+        fport_ok = False
+        r1 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=5)
+        if r1.returncode == 0:
+            server.logger.info("[screen-mirror] %s: fport abstract socket", so_name)
+            fport_ok = True
         else:
-            r1 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"tcp:{HOSCRCPY_DEVICE_PORT}"], timeout=5)
-            if r1.returncode != 0:
-                # fallback to abstract socket
-                r2 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"localabstract:{HOSCRCPY_GRPC_SOCKET}"], timeout=5)
-                if r2.returncode != 0:
-                    server.logger.info("[screen-mirror] %s: fport failed", so_name)
-                    return 0
-                server.logger.info("[screen-mirror] %s: fport abstract socket (fallback)", so_name)
-            else:
+            r2 = _hdc_run(["-t", device_id, "fport", f"tcp:{HOSCRCPY_LOCAL_PORT}", f"tcp:{HOSCRCPY_DEVICE_PORT}"], timeout=5)
+            if r2.returncode == 0:
                 server.logger.info("[screen-mirror] %s: fport TCP mode", so_name)
+                fport_ok = True
+        if not fport_ok:
+            server.logger.info("[screen-mirror] %s: fport failed", so_name)
+            return 0
 
         # Try gRPC connection (3 retries)
         channel = None
@@ -432,19 +428,30 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
             channel.close()
             return 0
 
-        server.logger.info("[screen-mirror] %s: stream established, sending wakeup + uinput", so_name)
+        server.logger.info("[screen-mirror] %s: stream established, sending wakeup + uinput + IDR", so_name)
 
         # Match Java: wakeup + uinput AFTER stream start
         _hdc_run(["-t", device_id, "shell", "power-shell", "wakeup"], timeout=3)
         _hdc_run(["-t", device_id, "shell", "uinput", "-M", "-m", "100", "100", "200", "200", "--trace"], timeout=3)
 
-        # Background: periodic IDR request (Java calls onRequestIDRFrame periodically)
+        # Immediately request IDR frame
+        try:
+            stub.onRequestIDRFrame(Empty(), timeout=5)
+            server.logger.info("[screen-mirror] %s: IDR request sent", so_name)
+        except Exception as e:
+            server.logger.info("[screen-mirror] %s: IDR request failed: %s", so_name, e)
+
+        # Background: periodic IDR request + uinput trace
         _ts = threading.Event()
 
         def _bg():
             while not _ts.is_set():
                 try:
                     stub.onRequestIDRFrame(Empty(), timeout=10)
+                except Exception:
+                    pass
+                try:
+                    _hdc_run(["-t", device_id, "shell", "uinput", "-M", "-m", "100", "100", "200", "200", "--trace"], timeout=3)
                 except Exception:
                     pass
                 _ts.wait(3.0)
