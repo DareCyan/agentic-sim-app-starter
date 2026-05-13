@@ -1201,10 +1201,10 @@ function excOpenAppTree() {
   document.getElementById('exc-app-tree-close').onclick = () => modal.classList.add('is-hidden');
   document.getElementById('exc-app-tree-add').onclick = () => {
     const body = document.getElementById('exc-app-tree-body');
-    // Remove any existing inline forms
     body.querySelectorAll('.exc-tree-inline-form').forEach(f => f.remove());
     const form = document.createElement('div');
     form.className = 'exc-tree-inline-form';
+    form.style.padding = '12px 0';
     form.innerHTML = '<input placeholder="应用分类名称" id="exc-tree-new-cat"> <input placeholder="流程名称" id="exc-tree-new-flow"> <button onclick="excTreeAddApp(this)">确定</button> <button class="cancel" onclick="this.parentElement.remove()">取消</button>';
     body.prepend(form);
     form.querySelector('input').focus();
@@ -1217,31 +1217,41 @@ function excRenderAppTree() {
   let html = '';
   const appNames = Object.keys(flows).sort();
   appNames.forEach(app => {
-    html += '<div class="exc-tree-node">';
-    html += '<div class="exc-tree-row">';
-    html += '<span class="exc-tree-icon">📁</span>';
-    html += '<span class="exc-tree-label">' + escHtml(app) + '</span>';
+    const flowList = flows[app] || [];
+    html += '<div class="exc-tree-card">';
+    html += '<div class="exc-tree-card-head">';
+    html += '<span class="exc-tree-card-icon is-app">A</span>';
+    html += '<span class="exc-tree-card-name">' + escHtml(app) + '</span>';
+    html += '<span class="exc-tree-card-count">' + flowList.length + ' 流程</span>';
     html += '<div class="exc-tree-actions">';
-    html += '<button class="exc-tree-act" onclick="excTreeRenameApp(\'' + escAttr(app) + '\')">✎</button>';
-    html += '<button class="exc-tree-act del" onclick="excTreeDeleteApp(\'' + escAttr(app) + '\')">✕</button>';
-    html += '<button class="exc-tree-act" onclick="excTreeAddFlow(this, \'' + escAttr(app) + '\')">+</button>';
+    html += '<button class="exc-tree-act" onclick="excTreeRenameApp(\'' + escAttr(app) + '\')" title="重命名">✎</button>';
+    html += '<button class="exc-tree-act del" onclick="excTreeDeleteApp(\'' + escAttr(app) + '\')" title="删除">✕</button>';
+    html += '<button class="exc-tree-act" onclick="excTreeAddFlow(this, \'' + escAttr(app) + '\')" title="添加流程">+</button>';
     html += '</div>';
     html += '</div>';
-    (flows[app] || []).forEach(flow => {
-      html += '<div class="exc-tree-node">';
-      html += '<div class="exc-tree-row">';
-      html += '<span class="exc-tree-icon">●</span>';
-      html += '<span class="exc-tree-label">' + escHtml(flow) + '</span>';
+    html += '<div class="exc-tree-leaves">';
+    flowList.forEach(flow => {
+      html += '<div class="exc-tree-leaf">';
+      html += '<span class="exc-tree-leaf-dot"></span>';
+      html += '<span class="exc-tree-leaf-name">' + escHtml(flow) + '</span>';
       html += '<div class="exc-tree-actions">';
-      html += '<button class="exc-tree-act" onclick="excTreeRenameFlow(\'' + escAttr(app) + '\',\'' + escAttr(flow) + '\')">✎</button>';
-      html += '<button class="exc-tree-act del" onclick="excTreeDeleteFlow(\'' + escAttr(app) + '\',\'' + escAttr(flow) + '\')">✕</button>';
-      html += '</div>';
+      html += '<button class="exc-tree-act" onclick="excTreeRenameFlow(\'' + escAttr(app) + '\',\'' + escAttr(flow) + '\')" title="重命名">✎</button>';
+      html += '<button class="exc-tree-act del" onclick="excTreeDeleteFlow(\'' + escAttr(app) + '\',\'' + escAttr(flow) + '\')" title="删除">✕</button>';
       html += '</div>';
       html += '</div>';
     });
     html += '</div>';
+    html += '</div>';
   });
-  body.innerHTML = html || '<div style="padding:16px;color:var(--text-muted);text-align:center;">暂无应用数据</div>';
+  const totalApps = appNames.length;
+  const totalFlows = Object.values(flows).reduce((s, f) => s + f.length, 0);
+  body.innerHTML = html || '<div class="exc-tree-empty"><div class="exc-tree-empty-icon">📋</div>暂无应用数据</div>';
+  // Update footer info
+  const footer = body.closest('.exc-modal-box').querySelector('.exc-tree-footer');
+  if (footer) {
+    const info = footer.querySelector('.exc-tree-footer-info');
+    if (info) info.textContent = totalApps + ' 个应用 / ' + totalFlows + ' 个流程';
+  }
 }
 
 function escAttr(s) { return s.replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
@@ -1315,13 +1325,14 @@ async function excTreeRenameFlow(app, flow) {
 }
 
 function excTreeAddFlow(btn, app) {
-  const node = btn.closest('.exc-tree-node');
-  const existing = node.querySelector('.exc-tree-inline-form');
+  const card = btn.closest('.exc-tree-card');
+  const leaves = card.querySelector('.exc-tree-leaves');
+  const existing = leaves.querySelector('.exc-tree-inline-form');
   if (existing) { existing.remove(); return; }
   const form = document.createElement('div');
   form.className = 'exc-tree-inline-form';
   form.innerHTML = '<input placeholder="流程名称" id="exc-tree-new-flow-item"> <button onclick="excTreeAddFlowConfirm(this, \'' + escAttr(app) + '\')">确定</button> <button class="cancel" onclick="this.parentElement.remove()">取消</button>';
-  node.appendChild(form);
+  leaves.appendChild(form);
   form.querySelector('input').focus();
 }
 
@@ -1370,47 +1381,61 @@ async function excLoadFaultTree() {
 function excRenderFaultTree() {
   const body = document.getElementById('exc-fault-tree-body');
   let html = '';
+  let totalL2 = 0, totalL3 = 0;
   (excFaultTreeData || []).forEach(l1 => {
     const l1Id = l1.l1_id || '';
-    html += '<div class="exc-tree-node">';
-    html += '<div class="exc-tree-row">';
-    html += '<span class="exc-tree-icon">📁</span>';
-    html += '<span class="exc-tree-label">' + escHtml(l1.column) + '</span>';
+    const types = l1.types || [];
+    const l3Count = types.reduce((s, t) => s + (t.columns || []).length, 0);
+    totalL2 += types.length;
+    totalL3 += l3Count;
+    html += '<div class="exc-tree-card">';
+    html += '<div class="exc-tree-card-head">';
+    html += '<span class="exc-tree-card-icon is-l1">D</span>';
+    html += '<span class="exc-tree-card-name">' + escHtml(l1.column) + '</span>';
+    html += '<span class="exc-tree-card-count">' + types.length + ' 类型 / ' + l3Count + ' 项</span>';
     html += '<div class="exc-tree-actions">';
-    html += '<button class="exc-tree-act" onclick="excFaultTreeRename(this, ' + l1Id + ', \'' + escAttr(l1.column) + '\')">✎</button>';
-    html += '<button class="exc-tree-act del" onclick="excFaultTreeDelete(' + l1Id + ')">✕</button>';
-    html += '<button class="exc-tree-act" onclick="excFaultTreeAddChild(this, \'L2\', ' + l1Id + ')">+</button>';
+    html += '<button class="exc-tree-act" onclick="excFaultTreeRename(this, ' + l1Id + ', \'' + escAttr(l1.column) + '\')" title="重命名">✎</button>';
+    html += '<button class="exc-tree-act del" onclick="excFaultTreeDelete(' + l1Id + ')" title="删除">✕</button>';
+    html += '<button class="exc-tree-act" onclick="excFaultTreeAddChild(this, \'L2\', ' + l1Id + ')" title="添加L2">+</button>';
     html += '</div>';
     html += '</div>';
-    (l1.types || []).forEach(l2 => {
+    html += '<div class="exc-tree-leaves">';
+    types.forEach(l2 => {
       const l2Id = l2.id;
-      html += '<div class="exc-tree-node">';
-      html += '<div class="exc-tree-row">';
-      html += '<span class="exc-tree-icon">📂</span>';
-      html += '<span class="exc-tree-label">' + escHtml(l2.name) + '</span>';
+      const cols = l2.columns || [];
+      // L2 as a sub-card header row
+      html += '<div class="exc-tree-leaf" style="padding-left:4px;">';
+      html += '<span class="exc-tree-card-icon is-l2" style="width:22px;height:22px;font-size:11px;border-radius:4px;">T</span>';
+      html += '<span class="exc-tree-leaf-name" style="font-weight:500;">' + escHtml(l2.name) + '</span>';
+      html += '<span class="exc-tree-card-count" style="font-size:10px;">' + cols.length + '</span>';
       html += '<div class="exc-tree-actions">';
-      html += '<button class="exc-tree-act" onclick="excFaultTreeRename(this, ' + l2Id + ', \'' + escAttr(l2.name) + '\')">✎</button>';
-      html += '<button class="exc-tree-act del" onclick="excFaultTreeDelete(' + l2Id + ')">✕</button>';
-      html += '<button class="exc-tree-act" onclick="excFaultTreeAddChild(this, \'L3\', ' + l2Id + ')">+</button>';
+      html += '<button class="exc-tree-act" onclick="excFaultTreeRename(this, ' + l2Id + ', \'' + escAttr(l2.name) + '\')" title="重命名">✎</button>';
+      html += '<button class="exc-tree-act del" onclick="excFaultTreeDelete(' + l2Id + ')" title="删除">✕</button>';
+      html += '<button class="exc-tree-act" onclick="excFaultTreeAddChild(this, \'L3\', ' + l2Id + ')" title="添加L3">+</button>';
       html += '</div>';
       html += '</div>';
-      (l2.columns || []).forEach(l3 => {
-        html += '<div class="exc-tree-node">';
-        html += '<div class="exc-tree-row">';
-        html += '<span class="exc-tree-icon">●</span>';
-        html += '<span class="exc-tree-label">' + escHtml(l3.name) + '</span>';
+      // L3 items under L2
+      cols.forEach(l3 => {
+        html += '<div class="exc-tree-leaf" style="padding-left:34px;">';
+        html += '<span class="exc-tree-leaf-dot"></span>';
+        html += '<span class="exc-tree-leaf-name">' + escHtml(l3.name) + '</span>';
         html += '<div class="exc-tree-actions">';
-        html += '<button class="exc-tree-act" onclick="excFaultTreeRename(this, ' + l3.id + ', \'' + escAttr(l3.name) + '\')">✎</button>';
-        html += '<button class="exc-tree-act del" onclick="excFaultTreeDelete(' + l3.id + ')">✕</button>';
-        html += '</div>';
+        html += '<button class="exc-tree-act" onclick="excFaultTreeRename(this, ' + l3.id + ', \'' + escAttr(l3.name) + '\')" title="重命名">✎</button>';
+        html += '<button class="exc-tree-act del" onclick="excFaultTreeDelete(' + l3.id + ')" title="删除">✕</button>';
         html += '</div>';
         html += '</div>';
       });
-      html += '</div>';
     });
     html += '</div>';
+    html += '</div>';
   });
-  body.innerHTML = html || '<div style="padding:16px;color:var(--text-muted);text-align:center;">暂无异常分类数据</div>';
+  const l1Count = (excFaultTreeData || []).length;
+  body.innerHTML = html || '<div class="exc-tree-empty"><div class="exc-tree-empty-icon">📋</div>暂无异常分类数据</div>';
+  const footer = body.closest('.exc-modal-box').querySelector('.exc-tree-footer');
+  if (footer) {
+    const info = footer.querySelector('.exc-tree-footer-info');
+    if (info) info.textContent = l1Count + ' 领域 / ' + totalL2 + ' 类型 / ' + totalL3 + ' 项';
+  }
 }
 
 async function excFaultTreeApiCall(data) {
@@ -1459,13 +1484,16 @@ async function excFaultTreeRename(btn, id, oldName) {
 }
 
 function excFaultTreeAddChild(btn, level, parentId) {
-  const node = btn.closest('.exc-tree-node');
-  const existing = node.querySelector(':scope > .exc-tree-inline-form');
+  const card = btn.closest('.exc-tree-card');
+  const leaves = card ? card.querySelector('.exc-tree-leaves') : null;
+  const container = leaves || btn.closest('.exc-tree-leaf')?.parentElement;
+  const existing = container?.querySelector(':scope > .exc-tree-inline-form');
   if (existing) { existing.remove(); return; }
   const form = document.createElement('div');
   form.className = 'exc-tree-inline-form';
+  form.style.paddingLeft = level === 'L3' ? '34px' : '4px';
   form.innerHTML = '<input placeholder="' + level + ' 名称" id="exc-tree-new-ft"> <button onclick="excFaultTreeAdd(this, \'' + level + '\', ' + parentId + ')">确定</button> <button class="cancel" onclick="this.parentElement.remove()">取消</button>';
-  node.appendChild(form);
+  container.appendChild(form);
   form.querySelector('input').focus();
 }
 
