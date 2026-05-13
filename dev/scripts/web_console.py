@@ -1182,6 +1182,206 @@ def mark_web_stopped(state_file: Path | None, logger: Any) -> None:
     update_runtime_state(state_file, state, logger)
 
 
+def _build_openapi_spec() -> dict:
+    return {
+        "openapi": "3.0.3",
+        "info": {"title": "Pipeline Console API", "version": "2.0.0", "description": "Web Console 后端 API 文档"},
+        "servers": [{"url": "http://localhost:{port}", "description": "本地控制台"}],
+        "tags": [
+            {"name": "流水线", "description": "Pipeline 任务管理"},
+            {"name": "异常场景", "description": "异常场景与分类树管理"},
+            {"name": "异常表", "description": "多 Sheet 异常表管理"},
+            {"name": "大模型", "description": "LLM 配置与调用"},
+            {"name": "设备仿真", "description": "HDC 设备操作与屏幕镜像"},
+        ],
+        "paths": {
+            "/api/pipelines": {
+                "get": {"tags": ["流水线"], "summary": "列出所有流水线", "responses": {"200": {"description": "流水线列表"}}},
+            },
+            "/api/pipelines/current": {
+                "get": {"tags": ["流水线"], "summary": "获取当前流水线任务详情", "responses": {"200": {"description": "任务详情"}}},
+            },
+            "/api/pipelines/current/logs": {
+                "get": {"tags": ["流水线"], "summary": "获取流水线和 Agent 日志", "responses": {"200": {"description": "日志内容"}}},
+            },
+            "/api/pipelines/current/artifact": {
+                "get": {"tags": ["流水线"], "summary": "下载构建产物", "responses": {"200": {"description": "构建产物文件"}}},
+            },
+            "/api/pipelines/current/terminate": {
+                "post": {"tags": ["流水线"], "summary": "终止当前流水线", "responses": {"200": {"description": "终止结果"}}},
+            },
+            "/api/sheets": {
+                "get": {"tags": ["异常表"], "summary": "列出所有异常表", "responses": {"200": {"description": "异常表列表", "content": {"application/json": {"schema": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "integer"}, "name": {"type": "string"}, "is_base": {"type": "integer"}}}}}}}}},
+                "post": {
+                    "tags": ["异常表"], "summary": "创建新异常表（复制基础表的应用树和异常分类树）",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "description": "异常表名称"}}}}}},
+                    "responses": {"200": {"description": "创建成功"}},
+                },
+            },
+            "/api/sheets/{id}": {
+                "put": {
+                    "tags": ["异常表"], "summary": "重命名异常表",
+                    "parameters": [{"name": "id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}}}},
+                    "responses": {"200": {"description": "重命名成功"}},
+                },
+                "delete": {
+                    "tags": ["异常表"], "summary": "删除异常表（不可删除基础表）",
+                    "parameters": [{"name": "id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "responses": {"200": {"description": "删除成功"}, "400": {"description": "不能删除基础表"}, "404": {"description": "异常表不存在"}},
+                },
+            },
+            "/api/issues/apps": {
+                "get": {
+                    "tags": ["异常场景"], "summary": "获取应用/流程列表",
+                    "parameters": [{"name": "sheet_id", "in": "query", "schema": {"type": "integer", "default": 1}}],
+                    "responses": {"200": {"description": "应用列表"}},
+                },
+            },
+            "/api/issues/apps/edit": {
+                "post": {
+                    "tags": ["异常场景"], "summary": "编辑应用树（添加/删除/重命名）",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["action"], "properties": {"action": {"type": "string", "enum": ["add", "delete", "rename"]}, "sheet_id": {"type": "integer"}, "category": {"type": "string"}, "flow": {"type": "string"}, "new_category": {"type": "string"}, "new_flow": {"type": "string"}}}}}},
+                    "responses": {"200": {"description": "操作结果"}},
+                },
+            },
+            "/api/issues/matrix": {
+                "get": {
+                    "tags": ["异常场景"], "summary": "获取异常分类矩阵（L1→L2→L3 层级）",
+                    "parameters": [{"name": "sheet_id", "in": "query", "schema": {"type": "integer", "default": 1}}],
+                    "responses": {"200": {"description": "分类矩阵"}},
+                },
+            },
+            "/api/issues/details": {
+                "get": {
+                    "tags": ["异常场景"], "summary": "获取所有异常场景详情",
+                    "parameters": [{"name": "sheet_id", "in": "query", "schema": {"type": "integer", "default": 1}}],
+                    "responses": {"200": {"description": "场景详情列表"}},
+                },
+            },
+            "/api/issues/fault-types/edit": {
+                "post": {
+                    "tags": ["异常场景"], "summary": "编辑异常分类树（添加/删除/重命名 L1/L2/L3）",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["action", "level", "name"], "properties": {"action": {"type": "string", "enum": ["add", "delete", "rename"]}, "sheet_id": {"type": "integer"}, "level": {"type": "string", "enum": ["L1", "L2", "L3"]}, "name": {"type": "string"}, "parent_id": {"type": "integer"}, "id": {"type": "integer"}}}}}},
+                    "responses": {"200": {"description": "操作结果"}},
+                },
+            },
+            "/api/issues/insert": {
+                "post": {
+                    "tags": ["异常场景"], "summary": "插入新异常场景",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["app", "flow", "l2_name", "l3_name", "description"], "properties": {"app": {"type": "string"}, "flow": {"type": "string"}, "l2_name": {"type": "string"}, "l3_name": {"type": "string"}, "l1_name": {"type": "string"}, "description": {"type": "string"}, "priority": {"type": "string"}, "questions": {"type": "array", "items": {"type": "string"}}, "sheet_id": {"type": "integer"}, "new_app_category": {"type": "string"}, "new_flow": {"type": "string"}, "new_l2": {"type": "string"}}}}}},
+                    "responses": {"200": {"description": "插入结果"}},
+                },
+            },
+            "/api/issues/generalize-insert": {
+                "post": {
+                    "tags": ["异常场景"], "summary": "批量插入泛化结果",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"results": {"type": "array", "items": {"type": "object"}}, "sheet_id": {"type": "integer"}}}}}},
+                    "responses": {"200": {"description": "插入统计"}},
+                },
+            },
+            "/api/issues/seed": {
+                "post": {"tags": ["异常场景"], "summary": "重置数据库（从种子文件恢复）", "responses": {"200": {"description": "重置完成"}}},
+            },
+            "/api/user/config": {
+                "get": {"tags": ["大模型"], "summary": "获取大模型配置", "responses": {"200": {"description": "LLM 配置"}}},
+                "post": {
+                    "tags": ["大模型"], "summary": "保存大模型配置",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"llm_api_url": {"type": "string"}, "llm_api_key": {"type": "string"}, "llm_model": {"type": "string"}}}}}},
+                    "responses": {"200": {"description": "保存结果"}},
+                },
+            },
+            "/api/llm/validate": {
+                "post": {
+                    "tags": ["大模型"], "summary": "验证大模型配置",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"api_url": {"type": "string"}, "api_key": {"type": "string"}, "model": {"type": "string"}}}}}},
+                    "responses": {"200": {"description": "验证结果"}},
+                },
+            },
+            "/api/llm/classify": {
+                "post": {
+                    "tags": ["大模型"], "summary": "AI 分类异常描述",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["description"], "properties": {"description": {"type": "string"}}}}}},
+                    "responses": {"200": {"description": "分类结果"}},
+                },
+            },
+            "/api/llm/generalize": {
+                "post": {
+                    "tags": ["大模型"], "summary": "AI 泛化异常场景",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {"question": {"type": "string"}, "app": {"type": "string"}, "flow": {"type": "string"}, "l3_name": {"type": "string"}, "direction": {"type": "string", "enum": ["row", "col"]}}}}}},
+                    "responses": {"200": {"description": "泛化结果"}},
+                },
+            },
+            "/api/sim-build/devices": {
+                "get": {"tags": ["设备仿真"], "summary": "列出已连接的 HDC 设备", "responses": {"200": {"description": "设备列表"}}},
+            },
+            "/api/sim-build/status": {
+                "get": {"tags": ["设备仿真"], "summary": "获取仿真构建状态", "responses": {"200": {"description": "状态信息"}}},
+            },
+            "/api/sim-build/screen": {
+                "get": {"tags": ["设备仿真"], "summary": "获取设备屏幕截图（JPEG）", "responses": {"200": {"description": "JPEG 图片", "content": {"image/jpeg": {"schema": {"type": "string", "format": "binary"}}}}}},
+            },
+            "/api/sim-build/resolution": {
+                "get": {"tags": ["设备仿真"], "summary": "获取设备屏幕分辨率", "responses": {"200": {"description": "分辨率信息"}}},
+            },
+            "/api/sim-build/mirror": {
+                "post": {
+                    "tags": ["设备仿真"], "summary": "启动屏幕镜像",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["device_id"], "properties": {"device_id": {"type": "string"}}}}}},
+                    "responses": {"200": {"description": "启动结果"}},
+                },
+            },
+            "/api/sim-build/run": {
+                "post": {
+                    "tags": ["设备仿真"], "summary": "执行仿真构建（安装 HAP + 传输文件）",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["device_id"], "properties": {"device_id": {"type": "string"}}}}}},
+                    "responses": {"200": {"description": "构建启动结果"}},
+                },
+            },
+            "/api/sim-build/input": {
+                "post": {"tags": ["设备仿真"], "summary": "发送触摸/按键输入到设备", "responses": {"200": {"description": "发送结果"}}},
+            },
+            "/api/console/shutdown": {
+                "post": {"tags": ["流水线"], "summary": "关闭 Web 控制台", "responses": {"200": {"description": "关闭确认"}}},
+            },
+        },
+    }
+
+
+def _build_swagger_html() -> str:
+    spec_json = json.dumps(_build_openapi_spec(), ensure_ascii=False, indent=2)
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>API 文档 — Pipeline Console</title>
+<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+<style>
+html {{ box-sizing: border-box; overflow: -moz-scrollbars-vertical; overflow-y: scroll; }}
+*, *:before, *:after {{ box-sizing: inherit; }}
+body {{ margin: 0; background: #fafafa; }}
+.swagger-ui .topbar {{ display: none; }}
+.swagger-ui .info .title {{ font-size: 28px; }}
+</style>
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script>
+SwaggerUIBundle({{
+  spec: {spec_json},
+  dom_id: '#swagger-ui',
+  presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+  layout: "BaseLayout",
+  docExpansion: "list",
+  defaultModelsExpandDepth: 1,
+  tryItOutEnabled: true,
+}})
+</script>
+</body>
+</html>"""
+
+
 class ConsoleHandler(BaseHTTPRequestHandler):
     server_version = "DevConsole/2.0"
 
@@ -1223,6 +1423,16 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+
+        if parsed.path == "/api-docs":
+            html = _build_swagger_html().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self.end_headers()
+            self.wfile.write(html)
+            return
+
         pipeline_key = get_selected_pipeline(self)
         if parsed.path == "/api/pipelines":
             payload = {

@@ -70,6 +70,10 @@ python dev/scripts/run_pipeline.py --input scenario1.json --wait
 
 页面支持切换查看不同 pipeline 的状态、日志、产物下载和终止动作。
 
+### API 文档
+
+控制台启动后访问 `http://localhost:<port>/api-docs` 可查看完整的 Swagger API 文档，支持在线调试。
+
 ## 目录约定
 
 ```text

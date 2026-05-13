@@ -2091,7 +2091,7 @@ p {
 
 /* Card-style node groups */
 .exc-tree-card {
-  background: var(--bg, #1a1a2e);
+  background: var(--bg);
   border: 1px solid var(--panel-border);
   border-radius: 8px;
   margin-bottom: 8px;
@@ -2106,15 +2106,25 @@ p {
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  cursor: default;
-  background: rgba(255,255,255,.02);
+  cursor: pointer;
+  background: rgba(0,0,0,.015);
   border-bottom: 1px solid transparent;
   transition: background .1s, border-color .1s;
+  user-select: none;
 }
 .exc-tree-card:hover > .exc-tree-card-head {
   border-bottom-color: var(--panel-border);
 }
-.exc-tree-card-head:hover { background: rgba(255,255,255,.04); }
+.exc-tree-card-head:hover { background: rgba(0,0,0,.025); }
+.exc-tree-card-chevron {
+  font-size: 11px;
+  color: var(--text-muted);
+  transition: transform .15s;
+  width: 12px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.exc-tree-card-head:hover .exc-tree-card-chevron { color: var(--text); }
 .exc-tree-card-icon {
   width: 28px;
   height: 28px;
@@ -2123,18 +2133,19 @@ p {
   align-items: center;
   justify-content: center;
   font-size: 14px;
+  font-weight: 600;
   flex-shrink: 0;
 }
 .exc-tree-card-icon.is-l1 {
-  background: rgba(var(--accent-rgb, 99,137,204), .15);
+  background: rgba(var(--accent-rgb), .12);
   color: var(--accent);
 }
 .exc-tree-card-icon.is-l2 {
-  background: rgba(196,154,74,.15);
+  background: rgba(196,154,74,.12);
   color: #c49a4a;
 }
 .exc-tree-card-icon.is-app {
-  background: rgba(var(--accent-rgb, 99,137,204), .15);
+  background: rgba(var(--accent-rgb), .12);
   color: var(--accent);
 }
 .exc-tree-card-name {
@@ -2154,6 +2165,39 @@ p {
   padding: 2px 7px;
   border-radius: 8px;
   flex-shrink: 0;
+}
+/* Collapsible content */
+.exc-tree-leaves.is-collapsed,
+.exc-tree-l3-list.is-collapsed {
+  display: none;
+}
+/* L2 sub-group within fault tree */
+.exc-tree-l2-group {
+  border-top: 1px solid var(--panel-border);
+  margin: 0;
+}
+.exc-tree-l2-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 8px 28px;
+  cursor: pointer;
+  user-select: none;
+  transition: background .1s;
+}
+.exc-tree-l2-head:hover { background: rgba(0,0,0,.02); }
+.exc-tree-l2-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.exc-tree-l3-list {
+  padding: 2px 14px 6px 56px;
 }
 .exc-tree-actions {
   display: none;
@@ -2187,15 +2231,15 @@ p {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 5px 10px;
   border-radius: 5px;
   cursor: default;
   transition: background .1s;
 }
-.exc-tree-leaf:hover { background: rgba(255,255,255,.03); }
+.exc-tree-leaf:hover { background: rgba(0,0,0,.025); }
 .exc-tree-leaf-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: var(--panel-border);
   flex-shrink: 0;
@@ -2315,6 +2359,19 @@ p {
 .exc-stat-accent {
   color: var(--accent);
 }
+.exc-stat-edit {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  vertical-align: middle;
+  opacity: .5;
+  transition: opacity .12s, color .12s;
+}
+.exc-stat-edit:hover { opacity: 1; color: var(--accent); }
 
 .exc-stat-pri {
   display: flex;
@@ -2322,17 +2379,6 @@ p {
   align-items: center;
   margin-left: auto;
 }
-.exc-tree-btn {
-  border: 1px solid var(--panel-border);
-  border-radius: var(--radius);
-  background: var(--panel);
-  color: var(--text);
-  padding: 6px 12px;
-  cursor: pointer;
-  font-size: 12px;
-  transition: border-color .15s;
-}
-.exc-tree-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 .exc-stat-pri-chip {
   display: inline-flex;
