@@ -213,16 +213,19 @@ _KERNEL_SO_MAP = {
 }
 _FALLBACK_SO = "libscrcpy_server0.z.so"
 
-# All .so files to try for gRPC streaming (ordered by likelihood)
-_ALL_SO_FILES = [
+# .so files — selection depends on uitest version:
+#   uitest >= 6.0.2.2 → Unix kernel .so only (reverse order: 6.5 → 6.4 → 6.3.1)
+#   uitest < 6.0.2.2 → HongMeng kernel .so (server1,2,3, 5.10)
+_UNIX_SO_FILES = [
+    "libscrcpy_server_unix_6.5-20260313.z.so",
+    "libscrcpy_server_unix_6.4-20260113.z.so",
+    "libscrcpy_server_unix_6.3.1-20260113.z.so",
+]
+_HONGMENG_SO_FILES = [
     "libscrcpy_server1.z.so",
     "libscrcpy_server2.z.so",
     "libscrcpy_server3.z.so",
     "libscrcpy_server_5.10-20260114.z.so",
-    "libscrcpy_server_unix_6.3.1-20260113.z.so",
-    "libscrcpy_server_unix_6.4-20260113.z.so",
-    "libscrcpy_server_unix_6.5-20260313.z.so",
-    "libscrcpy_server0.z.so",
 ]
 
 
@@ -255,15 +258,18 @@ def _deploy_hosscrcpy(server: Any, device_id: str) -> None:
     _hdc_run(["-t", device_id, "shell", "rm", "-f", HOSCRCPY_SO_REMOTE, HOSCRCPY_AGENT_REMOTE], timeout=3)
     time.sleep(0.5)
 
-    # Check uitest availability
+    # Check uitest availability and store version
     r = _hdc_run(["-t", device_id, "shell", "/system/bin/uitest", "--version"], timeout=5)
-    server.logger.info("[screen-mirror] uitest version: %s (rc=%d)", r.stdout.strip(), r.returncode)
+    uitest_ver = r.stdout.strip().split("\n")[-1].strip() if r.stdout.strip() else ""
+    server._uitest_version = uitest_ver
+    server.logger.info("[screen-mirror] uitest version: %s (rc=%d)", uitest_ver, r.returncode)
 
     kernel = _hdc_get_kernel_version(device_id)
     server.logger.info("[screen-mirror] device kernel: %s", kernel)
 
-    # Deploy agent.so
-    for agent_name in ["uitest_agent_1.2.3.so", "uitest_agent_1.1.12.so", "uitest_agent_1.1.5.so"]:
+    # Deploy agent.so — match Java version-based selection logic
+    # uitest >= 5.1.1.2 → 1.1.3, >= 6.0.2.1 → 1.1.12, default → 1.2.3
+    for agent_name in ["uitest_agent_1.1.3.so", "uitest_agent_1.2.3.so", "uitest_agent_1.1.12.so", "uitest_agent_1.1.5.so"]:
         agent_path = native_dir / agent_name
         if agent_path.exists():
             _hdc_run(["-t", device_id, "file", "send", str(agent_path), HOSCRCPY_AGENT_REMOTE], timeout=30)
@@ -579,8 +585,20 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
         _touch_stop.set()
         return frame_count
 
-    # Try each .so file for gRPC streaming
-    for so_name in _ALL_SO_FILES:
+    # Select .so list based on uitest version (match Java logic)
+    uitest_ver = getattr(server, "_uitest_version", "")
+    try:
+        ver_parts = [int(x) for x in uitest_ver.split(".")]
+        if ver_parts >= [6, 0, 2, 2]:
+            so_list = _UNIX_SO_FILES
+        else:
+            so_list = _HONGMENG_SO_FILES
+    except (ValueError, IndexError):
+        so_list = _UNIX_SO_FILES + _HONGMENG_SO_FILES
+    server.logger.info("[screen-mirror] uitest=%s, trying %d .so files: %s",
+                      uitest_ver, len(so_list), so_list)
+
+    for so_name in so_list:
         if not server.sim_screen_running:
             return
         try:
