@@ -358,7 +358,11 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
         # Deploy this .so
         _hdc_run(["-t", device_id, "file", "send", str(so_path), HOSCRCPY_SO_REMOTE], timeout=30)
 
-        # Start uitest with config params (match Java exactly)
+        # Step 1: Start PLAIN uitest first (load agent.so, like Java api/b.class does)
+        _hdc_run(["-t", device_id, "shell", "/system/bin/uitest start-daemon singleness &"], timeout=5)
+        time.sleep(2.0)
+
+        # Step 2: Start extension uitest (load server .so, like Java HosRemoteDevice does)
         uitest_cmd = (
             f"/system/bin/uitest start-daemon singleness"
             f" --extension-name libscreen_casting.z.so"
@@ -366,7 +370,7 @@ def _sim_screen_loop(server: Any, device_id: str) -> None:
             f" -p {HOSCRCPY_DEVICE_PORT} -iFrameInterval 2000 &"
         )
         _hdc_run(["-t", device_id, "shell", uitest_cmd], timeout=5)
-        time.sleep(4.0)
+        time.sleep(2.0)
 
         # Verify uitest is running
         r = _hdc_run(["-t", device_id, "shell", "pgrep", "-f", "uitest"], timeout=3)
