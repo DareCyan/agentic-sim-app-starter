@@ -1255,14 +1255,23 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/issues/apps":
-            rows = self.server.db.execute("SELECT category, flow FROM apps ORDER BY id").fetchall()
+            qs = parse_qs(parsed.query)
+            sid = int(qs.get("sheet_id", ["1"])[0])
+            rows = self.server.db.execute("SELECT category, flow FROM apps WHERE sheet_id=? ORDER BY id", (sid,)).fetchall()
             self._send_json([{"category": r[0], "flow": r[1]} for r in rows])
             return
 
+        if parsed.path == "/api/sheets":
+            rows = self.server.db.execute("SELECT id, name, is_base FROM sheets ORDER BY id").fetchall()
+            self._send_json([{"id": r[0], "name": r[1], "is_base": r[2]} for r in rows])
+            return
+
         if parsed.path == "/api/issues/matrix":
+            qs = parse_qs(parsed.query)
+            sid = int(qs.get("sheet_id", ["1"])[0])
             db = self.server.db
             # L1 domains
-            l1_rows = db.execute("SELECT id, name FROM fault_types WHERE level='L1' ORDER BY id").fetchall()
+            l1_rows = db.execute("SELECT id, name FROM fault_types WHERE level='L1' AND sheet_id=? ORDER BY id", (sid,)).fetchall()
             matrix = []
             for l1_id, l1_name in l1_rows:
                 # L2 types under this domain
@@ -1277,11 +1286,13 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                         (l2_id,)).fetchall()
                     l3_cols = [{"id": r[0], "name": r[1], "example": r[2] or ""} for r in l3_rows]
                     types.append({"id": l2_id, "name": l2_name, "columns": l3_cols})
-                matrix.append({"column": l1_name, "types": types})
+                matrix.append({"column": l1_name, "l1_id": l1_id, "types": types})
             self._send_json(matrix)
             return
 
         if parsed.path == "/api/issues/details":
+            qs = parse_qs(parsed.query)
+            sid = int(qs.get("sheet_id", ["1"])[0])
             db = self.server.db
             rows = db.execute("""
                 SELECT s.app, s.flow, s.priority, s.description, s.questions,
@@ -1290,8 +1301,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 JOIN fault_types l3 ON s.fault_type_id = l3.id
                 JOIN fault_types l2 ON l3.parent_id = l2.id
                 JOIN fault_types l1 ON l2.parent_id = l1.id
+                WHERE s.sheet_id=?
                 ORDER BY s.id
-            """).fetchall()
+            """, (sid,)).fetchall()
             result = []
             for app, flow, pri, desc, questions_json, l3_name, category, domain in rows:
                 result.append({
@@ -1365,6 +1377,162 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+
+        # ===== Sheet management =====
+        if parsed.path == "/api/sheets":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            name = (data.get("name") or "").strip()
+            if not name:
+                self._send_json({"ok": False, "message": "name required"}, HTTPStatus.BAD_REQUEST)
+                return
+            db = self.server.db
+            # Create sheet
+            cur = db.execute("INSERT INTO sheets (name, is_base) VALUES (?, 0)", (name,))
+            new_sid = cur.lastrowid
+            # Copy apps from base (sheet_id=1)
+            base_apps = db.execute("SELECT category, flow FROM apps WHERE sheet_id=1").fetchall()
+            for cat, flow in base_apps:
+                db.execute("INSERT INTO apps (sheet_id, category, flow) VALUES (?, ?, ?)", (new_sid, cat, flow))
+            # Copy fault_types from base, preserving hierarchy
+            old_to_new: dict[int, int] = {}
+            for level in ("L1", "L2", "L3"):
+                rows = db.execute(
+                    "SELECT id, parent_id, name, description FROM fault_types WHERE level=? AND sheet_id=1 ORDER BY id",
+                    (level,)).fetchall()
+                for old_id, old_parent, ft_name, ft_desc in rows:
+                    new_parent = old_to_new.get(old_parent) if old_parent else None
+                    c = db.execute(
+                        "INSERT INTO fault_types (sheet_id, parent_id, level, name, description) VALUES (?, ?, ?, ?, ?)",
+                        (new_sid, new_parent, level, ft_name, ft_desc or ""))
+                    old_to_new[old_id] = c.lastrowid
+            db.commit()
+            self._send_json({"ok": True, "sheet_id": new_sid, "name": name})
+            return
+
+        # ===== App tree editing =====
+        if parsed.path == "/api/issues/apps/edit":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            db = self.server.db
+            sid = int(data.get("sheet_id", 1))
+            action = data.get("action", "")
+            if action == "add":
+                cat = (data.get("category") or "").strip()
+                flow = (data.get("flow") or "").strip()
+                if not cat or not flow:
+                    self._send_json({"ok": False, "message": "category and flow required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                exists = db.execute("SELECT id FROM apps WHERE sheet_id=? AND category=? AND flow=?", (sid, cat, flow)).fetchone()
+                if exists:
+                    self._send_json({"ok": False, "message": "already exists"}, HTTPStatus.BAD_REQUEST)
+                    return
+                db.execute("INSERT INTO apps (sheet_id, category, flow) VALUES (?, ?, ?)", (sid, cat, flow))
+                db.commit()
+                self._send_json({"ok": True})
+            elif action == "delete":
+                cat = (data.get("category") or "").strip()
+                flow = (data.get("flow") or "").strip()
+                if not cat or not flow:
+                    self._send_json({"ok": False, "message": "category and flow required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                db.execute("DELETE FROM apps WHERE sheet_id=? AND category=? AND flow=?", (sid, cat, flow))
+                db.execute("DELETE FROM scenarios WHERE sheet_id=? AND app=? AND flow=?", (sid, cat, flow))
+                db.commit()
+                self._send_json({"ok": True})
+            elif action == "rename":
+                cat = (data.get("category") or "").strip()
+                flow = (data.get("flow") or "").strip()
+                new_cat = (data.get("new_category") or "").strip()
+                new_flow = (data.get("new_flow") or "").strip()
+                if not cat or not flow or not new_cat or not new_flow:
+                    self._send_json({"ok": False, "message": "all fields required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                db.execute("UPDATE apps SET category=?, flow=? WHERE sheet_id=? AND category=? AND flow=?",
+                           (new_cat, new_flow, sid, cat, flow))
+                db.execute("UPDATE scenarios SET app=?, flow=? WHERE sheet_id=? AND app=? AND flow=?",
+                           (new_cat, new_flow, sid, cat, flow))
+                db.commit()
+                self._send_json({"ok": True})
+            else:
+                self._send_json({"ok": False, "message": "unknown action"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        # ===== Fault type tree editing =====
+        if parsed.path == "/api/issues/fault-types/edit":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            db = self.server.db
+            sid = int(data.get("sheet_id", 1))
+            action = data.get("action", "")
+            if action == "add":
+                level = data.get("level", "")
+                name = (data.get("name") or "").strip()
+                parent_id = data.get("parent_id")
+                if not level or not name:
+                    self._send_json({"ok": False, "message": "level and name required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                if level not in ("L1", "L2", "L3"):
+                    self._send_json({"ok": False, "message": "invalid level"}, HTTPStatus.BAD_REQUEST)
+                    return
+                if level == "L1":
+                    parent_id = None
+                elif parent_id is None:
+                    self._send_json({"ok": False, "message": "parent_id required for L2/L3"}, HTTPStatus.BAD_REQUEST)
+                    return
+                exists = db.execute("SELECT id FROM fault_types WHERE sheet_id=? AND level=? AND name=? AND (parent_id=? OR (? IS NULL AND parent_id IS NULL))",
+                                    (sid, level, name, parent_id, parent_id)).fetchone()
+                if exists:
+                    self._send_json({"ok": False, "message": "already exists"}, HTTPStatus.BAD_REQUEST)
+                    return
+                c = db.execute("INSERT INTO fault_types (sheet_id, parent_id, level, name, description) VALUES (?, ?, ?, ?, '')",
+                               (sid, parent_id, level, name))
+                db.commit()
+                self._send_json({"ok": True, "id": c.lastrowid})
+            elif action == "delete":
+                ft_id = data.get("id")
+                if ft_id is None:
+                    self._send_json({"ok": False, "message": "id required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                # Delete children recursively (L2→L3, L1→L2→L3)
+                children = db.execute("SELECT id FROM fault_types WHERE parent_id=? AND sheet_id=?", (ft_id, sid)).fetchall()
+                for (child_id,) in children:
+                    grandkids = db.execute("SELECT id FROM fault_types WHERE parent_id=? AND sheet_id=?", (child_id, sid)).fetchall()
+                    for (gk_id,) in grandkids:
+                        db.execute("DELETE FROM scenarios WHERE fault_type_id=? AND sheet_id=?", (gk_id, sid))
+                    db.execute("DELETE FROM fault_types WHERE parent_id=? AND sheet_id=?", (child_id, sid))
+                    db.execute("DELETE FROM scenarios WHERE fault_type_id=? AND sheet_id=?", (child_id, sid))
+                db.execute("DELETE FROM fault_types WHERE id=? AND sheet_id=?", (ft_id, sid))
+                db.commit()
+                self._send_json({"ok": True})
+            elif action == "rename":
+                ft_id = data.get("id")
+                new_name = (data.get("name") or "").strip()
+                if ft_id is None or not new_name:
+                    self._send_json({"ok": False, "message": "id and name required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                db.execute("UPDATE fault_types SET name=? WHERE id=? AND sheet_id=?", (new_name, ft_id, sid))
+                db.commit()
+                self._send_json({"ok": True})
+            else:
+                self._send_json({"ok": False, "message": "unknown action"}, HTTPStatus.BAD_REQUEST)
+            return
+
         pipeline_key = get_selected_pipeline(self)
         if parsed.path == "/api/pipelines/current/terminate":
             context = get_pipeline_context(self.server.repo_root, self.server.config, pipeline_key)
@@ -1650,39 +1818,40 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             questions = data.get("questions", [])
             new_app_category = data.get("new_app_category")
             new_flow = data.get("new_flow")
+            sid = int(data.get("sheet_id", 1))
             if not all([app, flow, l2_name, l3_name, description]):
                 self._send_json({"ok": False, "message": "missing required fields"})
                 return
             db = self.server.db
             # 1. Insert new app if needed
             if new_app_category:
-                existing = db.execute("SELECT id FROM apps WHERE category=? AND flow=?", (app, flow)).fetchone()
+                existing = db.execute("SELECT id FROM apps WHERE sheet_id=? AND category=? AND flow=?", (sid, app, flow)).fetchone()
                 if not existing:
-                    db.execute("INSERT INTO apps (category, flow) VALUES (?, ?)", (app, flow))
+                    db.execute("INSERT INTO apps (sheet_id, category, flow) VALUES (?, ?, ?)", (sid, app, flow))
             # 2. Resolve or create L2
-            l2_row = db.execute("SELECT id FROM fault_types WHERE level='L2' AND name=?", (l2_name,)).fetchone()
+            l2_row = db.execute("SELECT id FROM fault_types WHERE level='L2' AND name=? AND sheet_id=?", (l2_name, sid)).fetchone()
             if l2_row:
                 l2_id = l2_row[0]
             else:
                 # Need L1
-                l1_row = db.execute("SELECT id FROM fault_types WHERE level='L1' AND name=?", (l1_name,)).fetchone()
+                l1_row = db.execute("SELECT id FROM fault_types WHERE level='L1' AND name=? AND sheet_id=?", (l1_name, sid)).fetchone()
                 if not l1_row:
                     self._send_json({"ok": False, "message": f"L1 '{l1_name}' not found"})
                     return
                 l1_id = l1_row[0]
-                db.execute("INSERT INTO fault_types (parent_id, level, name) VALUES (?, 'L2', ?)", (l1_id, l2_name))
+                db.execute("INSERT INTO fault_types (sheet_id, parent_id, level, name) VALUES (?, ?, 'L2', ?)", (sid, l1_id, l2_name))
                 l2_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             # 3. Resolve or create L3
-            l3_row = db.execute("SELECT id FROM fault_types WHERE level='L3' AND name=? AND parent_id=?", (l3_name, l2_id)).fetchone()
+            l3_row = db.execute("SELECT id FROM fault_types WHERE level='L3' AND name=? AND parent_id=? AND sheet_id=?", (l3_name, l2_id, sid)).fetchone()
             if l3_row:
                 l3_id = l3_row[0]
             else:
-                db.execute("INSERT INTO fault_types (parent_id, level, name, description) VALUES (?, 'L3', ?, '')", (l2_id, l3_name))
+                db.execute("INSERT INTO fault_types (sheet_id, parent_id, level, name, description) VALUES (?, ?, 'L3', ?, '')", (sid, l2_id, l3_name))
                 l3_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             # 4. Insert scenario
             db.execute(
-                "INSERT INTO scenarios (app, flow, fault_type_id, priority, description, questions) VALUES (?, ?, ?, ?, ?, ?)",
-                (app, flow, l3_id, priority, description, json.dumps(questions, ensure_ascii=False))
+                "INSERT INTO scenarios (sheet_id, app, flow, fault_type_id, priority, description, questions) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sid, app, flow, l3_id, priority, description, json.dumps(questions, ensure_ascii=False))
             )
             db.commit()
             scenario_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -1919,6 +2088,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
                 return
             results = data.get("results", [])
+            sid = int(data.get("sheet_id", 1))
             if not results:
                 self._send_json({"ok": False, "message": "no results to insert"})
                 return
@@ -1943,30 +2113,28 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 if not cell_app or not cell_flow or not cell_l3:
                     continue
 
-                # Get or create L3 fault type
+                # Get or create L3 fault type within sheet
                 l3_row = db.execute(
-                    "SELECT id FROM fault_types WHERE level='L3' AND name=?", (cell_l3,)
+                    "SELECT id FROM fault_types WHERE level='L3' AND name=? AND sheet_id=?", (cell_l3, sid)
                 ).fetchone()
                 if l3_row:
                     l3_id = l3_row[0]
                 else:
-                    # Find L2 parent - use first L2 as default
-                    l2_row = db.execute("SELECT id FROM fault_types WHERE level='L2' LIMIT 1").fetchone()
+                    l2_row = db.execute("SELECT id FROM fault_types WHERE level='L2' AND sheet_id=? LIMIT 1", (sid,)).fetchone()
                     if not l2_row:
                         continue
                     db.execute(
-                        "INSERT INTO fault_types (parent_id, level, name, description) VALUES (?, 'L3', ?, '')",
-                        (l2_row[0], cell_l3)
+                        "INSERT INTO fault_types (sheet_id, parent_id, level, name, description) VALUES (?, ?, 'L3', ?, '')",
+                        (sid, l2_row[0], cell_l3)
                     )
                     l3_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
                 if add_to_existing and existing_desc and new_scenario:
-                    # Add scenario to existing description
                     existing = db.execute(
                         "SELECT s.id, s.questions FROM scenarios s "
                         "JOIN fault_types ft ON s.fault_type_id=ft.id "
-                        "WHERE s.app=? AND s.flow=? AND ft.name=? AND s.description=?",
-                        (cell_app, cell_flow, cell_l3, existing_desc)
+                        "WHERE s.sheet_id=? AND s.app=? AND s.flow=? AND ft.name=? AND s.description=?",
+                        (sid, cell_app, cell_flow, cell_l3, existing_desc)
                     ).fetchone()
                     if existing:
                         scenario_id = existing[0]
@@ -1979,22 +2147,20 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                             )
                             updated += 1
                 elif is_new and new_desc and new_scenario:
-                    # Insert new scenario with new description
-                    # Check if app+flow exists
                     app_row = db.execute(
-                        "SELECT id FROM apps WHERE category=? AND flow=?",
-                        (cell_app, cell_flow)
+                        "SELECT id FROM apps WHERE category=? AND flow=? AND sheet_id=?",
+                        (cell_app, cell_flow, sid)
                     ).fetchone()
                     if not app_row:
                         db.execute(
-                            "INSERT INTO apps (category, flow) VALUES (?, ?)",
-                            (cell_app, cell_flow)
+                            "INSERT INTO apps (sheet_id, category, flow) VALUES (?, ?, ?)",
+                            (sid, cell_app, cell_flow)
                         )
 
                     db.execute(
-                        "INSERT INTO scenarios (app, flow, fault_type_id, priority, description, questions) "
-                        "VALUES (?, ?, ?, 'P2', ?, ?)",
-                        (cell_app, cell_flow, l3_id, new_desc, json.dumps([new_scenario], ensure_ascii=False))
+                        "INSERT INTO scenarios (sheet_id, app, flow, fault_type_id, priority, description, questions) "
+                        "VALUES (?, ?, ?, ?, 'P2', ?, ?)",
+                        (sid, cell_app, cell_flow, l3_id, new_desc, json.dumps([new_scenario], ensure_ascii=False))
                     )
                     inserted += 1
 
@@ -2002,6 +2168,57 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "inserted": inserted, "updated": updated})
             return
 
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        # DELETE /api/sheets/{id}
+        m = re.match(r"^/api/sheets/(\d+)$", parsed.path)
+        if m:
+            sid = int(m.group(1))
+            db = self.server.db
+            sheet = db.execute("SELECT is_base FROM sheets WHERE id=?", (sid,)).fetchone()
+            if not sheet:
+                self._send_json({"ok": False, "message": "sheet not found"}, HTTPStatus.NOT_FOUND)
+                return
+            if sheet[0]:
+                self._send_json({"ok": False, "message": "cannot delete base sheet"}, HTTPStatus.BAD_REQUEST)
+                return
+            db.execute("DELETE FROM scenarios WHERE sheet_id=?", (sid,))
+            db.execute("DELETE FROM fault_types WHERE sheet_id=?", (sid,))
+            db.execute("DELETE FROM apps WHERE sheet_id=?", (sid,))
+            db.execute("DELETE FROM sheets WHERE id=?", (sid,))
+            db.commit()
+            self._send_json({"ok": True})
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def do_PUT(self) -> None:
+        parsed = urlparse(self.path)
+        # PUT /api/sheets/{id} — rename
+        m = re.match(r"^/api/sheets/(\d+)$", parsed.path)
+        if m:
+            sid = int(m.group(1))
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            name = (data.get("name") or "").strip()
+            if not name:
+                self._send_json({"ok": False, "message": "name required"}, HTTPStatus.BAD_REQUEST)
+                return
+            db = self.server.db
+            sheet = db.execute("SELECT id FROM sheets WHERE id=?", (sid,)).fetchone()
+            if not sheet:
+                self._send_json({"ok": False, "message": "sheet not found"}, HTTPStatus.NOT_FOUND)
+                return
+            db.execute("UPDATE sheets SET name=? WHERE id=?", (name, sid))
+            db.commit()
+            self._send_json({"ok": True})
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -2045,13 +2262,21 @@ class ConsoleServer(ThreadingHTTPServer):
         self.db = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript("""
+            CREATE TABLE IF NOT EXISTS sheets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                is_base INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS apps (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sheet_id INTEGER NOT NULL DEFAULT 1,
                 category TEXT NOT NULL,
                 flow TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS fault_types (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sheet_id INTEGER NOT NULL DEFAULT 1,
                 parent_id INTEGER REFERENCES fault_types(id),
                 level TEXT NOT NULL CHECK(level IN ('L1','L2','L3','L4')),
                 name TEXT NOT NULL,
@@ -2059,6 +2284,7 @@ class ConsoleServer(ThreadingHTTPServer):
             );
             CREATE TABLE IF NOT EXISTS scenarios (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sheet_id INTEGER NOT NULL DEFAULT 1,
                 app TEXT NOT NULL,
                 flow TEXT NOT NULL,
                 fault_type_id INTEGER NOT NULL REFERENCES fault_types(id),
@@ -2072,8 +2298,20 @@ class ConsoleServer(ThreadingHTTPServer):
             );
         """)
         self.db.commit()
+        # Ensure base sheet exists
+        base = self.db.execute("SELECT id FROM sheets WHERE is_base=1").fetchone()
+        if not base:
+            self.db.execute("INSERT INTO sheets (name, is_base) VALUES ('基础异常', 1)")
+            self.db.commit()
+        # Migrate: add sheet_id column if missing (existing dbs)
+        for table in ("apps", "fault_types", "scenarios"):
+            try:
+                self.db.execute(f"SELECT sheet_id FROM {table} LIMIT 1")
+            except sqlite3.OperationalError:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN sheet_id INTEGER NOT NULL DEFAULT 1")
+                self.db.commit()
         # Seed from files if tables are empty
-        count = self.db.execute("SELECT COUNT(*) FROM apps").fetchone()[0]
+        count = self.db.execute("SELECT COUNT(*) FROM apps WHERE sheet_id=1").fetchone()[0]
         if count == 0:
             self._seed_from_files()
 
@@ -2091,7 +2329,7 @@ class ConsoleServer(ThreadingHTTPServer):
                 if val0:
                     current_cat = val0
                 if len(row) > 1 and row[1].strip():
-                    self.db.execute("INSERT INTO apps (category, flow) VALUES (?, ?)", (current_cat, row[1].strip()))
+                    self.db.execute("INSERT INTO apps (sheet_id, category, flow) VALUES (1, ?, ?)", (current_cat, row[1].strip()))
         # Seed fault_types hierarchy from issues.csv
         # CSV structure: row0=L1 domains, row1=L2 types, row2=L3 names, row3=L4 examples
         # L2 types may span multiple columns (empty adjacent cells = colspan)
@@ -2132,7 +2370,7 @@ class ConsoleServer(ThreadingHTTPServer):
                     d = c["l1"]
                     if d and d not in domain_ids:
                         cur = self.db.execute(
-                            "INSERT INTO fault_types (level, name) VALUES ('L1', ?)", (d,))
+                            "INSERT INTO fault_types (sheet_id, level, name) VALUES (1, 'L1', ?)", (d,))
                         domain_ids[d] = cur.lastrowid
                 # L2: types (unique per name)
                 l2_ids: dict[str, int] = {}
@@ -2140,7 +2378,7 @@ class ConsoleServer(ThreadingHTTPServer):
                     name = c["l2"]
                     if name and name not in l2_ids:
                         cur = self.db.execute(
-                            "INSERT INTO fault_types (parent_id, level, name, description) VALUES (?, 'L2', ?, ?)",
+                            "INSERT INTO fault_types (sheet_id, parent_id, level, name, description) VALUES (1, ?, 'L2', ?, ?)",
                             (domain_ids.get(c["l1"]), name, ""))
                         l2_ids[name] = cur.lastrowid
                 # L3: one per CSV column
@@ -2153,7 +2391,7 @@ class ConsoleServer(ThreadingHTTPServer):
                     l2_id = l2_ids.get(l2_name)
                     if l2_id:
                         cur = self.db.execute(
-                            "INSERT INTO fault_types (parent_id, level, name, description) VALUES (?, 'L3', ?, ?)",
+                            "INSERT INTO fault_types (sheet_id, parent_id, level, name, description) VALUES (1, ?, 'L3', ?, ?)",
                             (l2_id, l3_name, l4_desc))
                         col_l3_ids.append(cur.lastrowid)
                     else:
@@ -2190,7 +2428,7 @@ class ConsoleServer(ThreadingHTTPServer):
                 priority = pri_match.group(1) if pri_match else "P3"
                 # Insert scenario
                 self.db.execute(
-                    "INSERT INTO scenarios (app, flow, fault_type_id, priority, description, questions) VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO scenarios (sheet_id, app, flow, fault_type_id, priority, description, questions) VALUES (1, ?, ?, ?, ?, ?, ?)",
                     (app, flow, l3_id, priority, description,
                      json.dumps(questions, ensure_ascii=False)))
         self.db.commit()

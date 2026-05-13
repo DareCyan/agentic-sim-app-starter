@@ -1990,6 +1990,171 @@ p {
   overflow: hidden;
 }
 
+/* ===== Sheet Tab Bar ===== */
+.exc-sheet-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+.exc-sheet-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+}
+.exc-sheet-tabs::-webkit-scrollbar { height: 0; }
+.exc-sheet-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+  transition: color .15s, border-color .15s;
+}
+.exc-sheet-tab:hover { color: var(--text); }
+.exc-sheet-tab.is-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.exc-sheet-tab-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.exc-sheet-tab-badge {
+  font-size: 10px;
+  background: var(--panel-border);
+  color: var(--text-muted);
+  padding: 1px 5px;
+  border-radius: 6px;
+}
+.exc-sheet-add {
+  width: 30px;
+  height: 30px;
+  border: 1px dashed var(--panel-border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: border-color .15s, color .15s;
+}
+.exc-sheet-add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ===== Tree Editor ===== */
+.exc-tree-body {
+  overflow-y: auto;
+  max-height: 55vh;
+  padding: 8px 0;
+}
+.exc-tree-footer {
+  padding: 10px 16px;
+  border-top: 1px solid var(--panel-border);
+}
+.exc-tree-add-root {
+  border: 1px dashed var(--panel-border);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text-muted);
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.exc-tree-add-root:hover { border-color: var(--accent); color: var(--accent); }
+.exc-tree-node {
+  margin-left: 0;
+}
+.exc-tree-node .exc-tree-node { margin-left: 20px; }
+.exc-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: default;
+}
+.exc-tree-row:hover { background: var(--panel-border); }
+.exc-tree-icon {
+  font-size: 11px;
+  color: var(--text-muted);
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.exc-tree-label {
+  flex: 1;
+  font-size: 13px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.exc-tree-actions {
+  display: none;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.exc-tree-row:hover .exc-tree-actions { display: flex; }
+.exc-tree-act {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+.exc-tree-act:hover { color: var(--accent); background: var(--panel); }
+.exc-tree-act.del:hover { color: #c25450; }
+.exc-tree-inline-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+}
+.exc-tree-inline-form input {
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+.exc-tree-inline-form input:focus { border-color: var(--accent); }
+.exc-tree-inline-form button {
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.exc-tree-inline-form .cancel {
+  background: var(--panel-border);
+  color: var(--text);
+}
+
 /* Content area */
 .exc-content {
   height: 100%;
@@ -2046,6 +2211,17 @@ p {
   align-items: center;
   margin-left: auto;
 }
+.exc-tree-btn {
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: border-color .15s;
+}
+.exc-tree-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 .exc-stat-pri-chip {
   display: inline-flex;

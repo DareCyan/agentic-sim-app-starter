@@ -10,7 +10,7 @@ function switchTab(tabName) {
     refreshAll();
   }
   if (tabName === "exception" && !excCache.loaded) {
-    excLoadAll();
+    if (excState.sheets.length > 0) excLoadAll();
   }
   if (tabName === "sim-build") {
     simBuildRefresh();

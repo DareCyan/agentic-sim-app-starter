@@ -74,7 +74,12 @@
       </div>
 
       <div class="tab-pane" data-pane="exception">
-        <div class="exc-content">
+        <!-- Sheet tab bar -->
+        <div class="exc-sheet-bar">
+          <div class="exc-sheet-tabs" id="exc-sheet-tabs"></div>
+          <button class="exc-sheet-add" id="exc-sheet-add" title="新增异常表">+</button>
+        </div>
+        <div class="exc-content" id="exc-content-area">
           <!-- Stats bar -->
           <div class="exc-stats" id="exc-stats"></div>
           <!-- Matrix cross-table -->
@@ -466,6 +471,34 @@
         <div class="exc-generalize-confirm-footer">
           <button class="exc-generalize-btn-cancel" id="exc-generalize-cancel">取消</button>
           <button class="exc-generalize-btn-confirm" id="exc-generalize-confirm">确认插入</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- App Tree Editor Modal -->
+    <div id="exc-app-tree-modal" class="exc-modal-overlay is-hidden">
+      <div class="exc-modal-box" style="max-width:500px;max-height:80vh;">
+        <div class="exc-modal-header">
+          <h3>编辑应用树</h3>
+          <button class="exc-modal-close" id="exc-app-tree-close">&times;</button>
+        </div>
+        <div class="exc-modal-body exc-tree-body" id="exc-app-tree-body"></div>
+        <div class="exc-tree-footer">
+          <button class="exc-tree-add-root" id="exc-app-tree-add">+ 添加应用</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Fault Type Tree Editor Modal -->
+    <div id="exc-fault-tree-modal" class="exc-modal-overlay is-hidden">
+      <div class="exc-modal-box" style="max-width:600px;max-height:80vh;">
+        <div class="exc-modal-header">
+          <h3>编辑异常分类树</h3>
+          <button class="exc-modal-close" id="exc-fault-tree-close">&times;</button>
+        </div>
+        <div class="exc-modal-body exc-tree-body" id="exc-fault-tree-body"></div>
+        <div class="exc-tree-footer">
+          <button class="exc-tree-add-root" id="exc-fault-tree-add">+ 添加分类</button>
         </div>
       </div>
     </div>

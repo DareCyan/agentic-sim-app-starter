@@ -18,6 +18,9 @@ const excState = {
   selectedRow: -1,         // row index (-1 = none)
   // Row mapping
   rows: [],          // [{type:'app', name, ri}, {type:'flow', name, app, ri}]
+  // Sheet state
+  sheets: [],        // [{id, name, is_base}]
+  activeSheetId: 1,  // currently active sheet
 };
 
 const excCache = { loaded: false };
@@ -60,10 +63,11 @@ document.getElementById('exc-matrix-wrap').addEventListener('wheel', (e) => {
 async function excLoadAll() {
   if (excCache.loaded) return;
   try {
+    const sid = excState.activeSheetId;
     const [apps, matrix, details] = await Promise.all([
-      fetch('/api/issues/apps').then(r => r.json()),
-      fetch('/api/issues/matrix').then(r => r.json()),
-      fetch('/api/issues/details').then(r => r.json()),
+      fetch('/api/issues/apps?sheet_id=' + sid).then(r => r.json()),
+      fetch('/api/issues/matrix?sheet_id=' + sid).then(r => r.json()),
+      fetch('/api/issues/details?sheet_id=' + sid).then(r => r.json()),
     ]);
     excState.apps = apps || [];
     excState.matrix = matrix || [];
@@ -168,6 +172,11 @@ function excBuild() {
   // Bind add button
   const addBtn = document.getElementById('exc-add-btn');
   if (addBtn) addBtn.addEventListener('click', excOpenAddModal);
+  // Bind tree edit buttons
+  const editAppBtn = document.getElementById('exc-edit-app-tree');
+  if (editAppBtn) editAppBtn.addEventListener('click', excOpenAppTree);
+  const editFaultBtn = document.getElementById('exc-edit-fault-tree');
+  if (editFaultBtn) editFaultBtn.addEventListener('click', excOpenFaultTree);
   // Bind zoom controls
   const zoomIn = document.getElementById('exc-zoom-in');
   const zoomOut = document.getElementById('exc-zoom-out');
@@ -198,6 +207,8 @@ function excBuildStats() {
 
   // Add button
   html += '<div class="exc-stat-pri">';
+  html += '<button class="exc-tree-btn" id="exc-edit-app-tree" title="编辑应用树">编辑应用树</button>';
+  html += '<button class="exc-tree-btn" id="exc-edit-fault-tree" title="编辑异常分类树">编辑异常分类树</button>';
   html += '<button class="exc-add-btn" id="exc-add-btn">' + t('exc.add-btn') + '</button>';
   html += '</div>';
 
@@ -792,6 +803,7 @@ document.getElementById('exc-generalize-confirm').addEventListener('click', asyn
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         results: excGeneralizeData.results,
+        sheet_id: excState.activeSheetId,
       }),
     });
 
@@ -1158,7 +1170,7 @@ document.getElementById('exc-add-confirm').addEventListener('click', async () =>
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         description, app, flow, l2_name, l3_name, l1_name, priority,
-        questions,
+        questions, sheet_id: excState.activeSheetId,
         new_app_category: appSel.value === '__new__' ? app : null,
         new_flow: flowSel.value === '__new__' ? flow : null,
         new_l2: l2Sel.value === '__new__' ? l2_name : null,
@@ -1179,6 +1191,417 @@ document.getElementById('exc-add-confirm').addEventListener('click', async () =>
     btn.disabled = false;
   }
 });
+
+/* ===== Tree Editor — App Tree ===== */
+
+function excOpenAppTree() {
+  const modal = document.getElementById('exc-app-tree-modal');
+  modal.classList.remove('is-hidden');
+  excRenderAppTree();
+  document.getElementById('exc-app-tree-close').onclick = () => modal.classList.add('is-hidden');
+  document.getElementById('exc-app-tree-add').onclick = () => {
+    const body = document.getElementById('exc-app-tree-body');
+    // Remove any existing inline forms
+    body.querySelectorAll('.exc-tree-inline-form').forEach(f => f.remove());
+    const form = document.createElement('div');
+    form.className = 'exc-tree-inline-form';
+    form.innerHTML = '<input placeholder="应用分类名称" id="exc-tree-new-cat"> <input placeholder="流程名称" id="exc-tree-new-flow"> <button onclick="excTreeAddApp(this)">确定</button> <button class="cancel" onclick="this.parentElement.remove()">取消</button>';
+    body.prepend(form);
+    form.querySelector('input').focus();
+  };
+}
+
+function excRenderAppTree() {
+  const body = document.getElementById('exc-app-tree-body');
+  const flows = excState.appFlows;
+  let html = '';
+  const appNames = Object.keys(flows).sort();
+  appNames.forEach(app => {
+    html += '<div class="exc-tree-node">';
+    html += '<div class="exc-tree-row">';
+    html += '<span class="exc-tree-icon">📁</span>';
+    html += '<span class="exc-tree-label">' + escHtml(app) + '</span>';
+    html += '<div class="exc-tree-actions">';
+    html += '<button class="exc-tree-act" onclick="excTreeRenameApp(\'' + escAttr(app) + '\')">✎</button>';
+    html += '<button class="exc-tree-act del" onclick="excTreeDeleteApp(\'' + escAttr(app) + '\')">✕</button>';
+    html += '<button class="exc-tree-act" onclick="excTreeAddFlow(this, \'' + escAttr(app) + '\')">+</button>';
+    html += '</div>';
+    html += '</div>';
+    (flows[app] || []).forEach(flow => {
+      html += '<div class="exc-tree-node">';
+      html += '<div class="exc-tree-row">';
+      html += '<span class="exc-tree-icon">●</span>';
+      html += '<span class="exc-tree-label">' + escHtml(flow) + '</span>';
+      html += '<div class="exc-tree-actions">';
+      html += '<button class="exc-tree-act" onclick="excTreeRenameFlow(\'' + escAttr(app) + '\',\'' + escAttr(flow) + '\')">✎</button>';
+      html += '<button class="exc-tree-act del" onclick="excTreeDeleteFlow(\'' + escAttr(app) + '\',\'' + escAttr(flow) + '\')">✕</button>';
+      html += '</div>';
+      html += '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+  });
+  body.innerHTML = html || '<div style="padding:16px;color:var(--text-muted);text-align:center;">暂无应用数据</div>';
+}
+
+function escAttr(s) { return s.replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
+
+async function excTreeApiCall(data) {
+  const res = await fetch('/api/issues/apps/edit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...data, sheet_id: excState.activeSheetId }),
+  });
+  return res.json();
+}
+
+async function excTreeAddApp(btn) {
+  const form = btn.parentElement;
+  const cat = form.querySelector('#exc-tree-new-cat').value.trim();
+  const flow = form.querySelector('#exc-tree-new-flow').value.trim();
+  if (!cat || !flow) return;
+  const data = await excTreeApiCall({ action: 'add', category: cat, flow: flow });
+  if (data.ok) {
+    form.remove();
+    excCache.loaded = false;
+    await excLoadAll();
+    excRenderAppTree();
+    excBuildStats();
+  } else { alert(data.message || '添加失败'); }
+}
+
+async function excTreeDeleteApp(app) {
+  if (!confirm('删除应用 "' + app + '" 及其所有流程和场景数据？')) return;
+  const flows = excState.appFlows[app] || [];
+  for (const flow of flows) {
+    await excTreeApiCall({ action: 'delete', category: app, flow: flow });
+  }
+  excCache.loaded = false;
+  await excLoadAll();
+  excRenderAppTree();
+  excBuildStats();
+}
+
+async function excTreeRenameApp(app) {
+  const newName = prompt('新应用名称:', app);
+  if (!newName || !newName.trim() || newName.trim() === app) return;
+  const flows = excState.appFlows[app] || [];
+  for (const flow of flows) {
+    await excTreeApiCall({ action: 'rename', category: app, flow: flow, new_category: newName.trim(), new_flow: flow });
+  }
+  excCache.loaded = false;
+  await excLoadAll();
+  excRenderAppTree();
+  excBuildStats();
+}
+
+async function excTreeDeleteFlow(app, flow) {
+  if (!confirm('删除流程 "' + flow + '"？')) return;
+  await excTreeApiCall({ action: 'delete', category: app, flow: flow });
+  excCache.loaded = false;
+  await excLoadAll();
+  excRenderAppTree();
+  excBuildStats();
+}
+
+async function excTreeRenameFlow(app, flow) {
+  const newName = prompt('新流程名称:', flow);
+  if (!newName || !newName.trim() || newName.trim() === flow) return;
+  await excTreeApiCall({ action: 'rename', category: app, flow: flow, new_category: app, new_flow: newName.trim() });
+  excCache.loaded = false;
+  await excLoadAll();
+  excRenderAppTree();
+  excBuildStats();
+}
+
+function excTreeAddFlow(btn, app) {
+  const node = btn.closest('.exc-tree-node');
+  const existing = node.querySelector('.exc-tree-inline-form');
+  if (existing) { existing.remove(); return; }
+  const form = document.createElement('div');
+  form.className = 'exc-tree-inline-form';
+  form.innerHTML = '<input placeholder="流程名称" id="exc-tree-new-flow-item"> <button onclick="excTreeAddFlowConfirm(this, \'' + escAttr(app) + '\')">确定</button> <button class="cancel" onclick="this.parentElement.remove()">取消</button>';
+  node.appendChild(form);
+  form.querySelector('input').focus();
+}
+
+async function excTreeAddFlowConfirm(btn, app) {
+  const form = btn.parentElement;
+  const flow = form.querySelector('#exc-tree-new-flow-item').value.trim();
+  if (!flow) return;
+  const data = await excTreeApiCall({ action: 'add', category: app, flow: flow });
+  if (data.ok) {
+    form.remove();
+    excCache.loaded = false;
+    await excLoadAll();
+    excRenderAppTree();
+    excBuildStats();
+  } else { alert(data.message || '添加失败'); }
+}
+
+/* ===== Tree Editor — Fault Type Tree ===== */
+
+let excFaultTreeData = []; // cached for editor
+
+function excOpenFaultTree() {
+  const modal = document.getElementById('exc-fault-tree-modal');
+  modal.classList.remove('is-hidden');
+  excLoadFaultTree();
+  document.getElementById('exc-fault-tree-close').onclick = () => modal.classList.add('is-hidden');
+  document.getElementById('exc-fault-tree-add').onclick = () => {
+    const body = document.getElementById('exc-fault-tree-body');
+    body.querySelectorAll('.exc-tree-inline-form').forEach(f => f.remove());
+    const form = document.createElement('div');
+    form.className = 'exc-tree-inline-form';
+    form.innerHTML = '<input placeholder="L1 分类名称" id="exc-tree-new-l1"> <button onclick="excFaultTreeAdd(this, \'L1\', null)">确定</button> <button class="cancel" onclick="this.parentElement.remove()">取消</button>';
+    body.prepend(form);
+    form.querySelector('input').focus();
+  };
+}
+
+async function excLoadFaultTree() {
+  const sid = excState.activeSheetId;
+  const res = await fetch('/api/issues/matrix?sheet_id=' + sid);
+  const matrix = await res.json();
+  excFaultTreeData = matrix;
+  excRenderFaultTree();
+}
+
+function excRenderFaultTree() {
+  const body = document.getElementById('exc-fault-tree-body');
+  let html = '';
+  (excFaultTreeData || []).forEach(l1 => {
+    const l1Id = l1.l1_id || '';
+    html += '<div class="exc-tree-node">';
+    html += '<div class="exc-tree-row">';
+    html += '<span class="exc-tree-icon">📁</span>';
+    html += '<span class="exc-tree-label">' + escHtml(l1.column) + '</span>';
+    html += '<div class="exc-tree-actions">';
+    html += '<button class="exc-tree-act" onclick="excFaultTreeRename(this, ' + l1Id + ', \'' + escAttr(l1.column) + '\')">✎</button>';
+    html += '<button class="exc-tree-act del" onclick="excFaultTreeDelete(' + l1Id + ')">✕</button>';
+    html += '<button class="exc-tree-act" onclick="excFaultTreeAddChild(this, \'L2\', ' + l1Id + ')">+</button>';
+    html += '</div>';
+    html += '</div>';
+    (l1.types || []).forEach(l2 => {
+      const l2Id = l2.id;
+      html += '<div class="exc-tree-node">';
+      html += '<div class="exc-tree-row">';
+      html += '<span class="exc-tree-icon">📂</span>';
+      html += '<span class="exc-tree-label">' + escHtml(l2.name) + '</span>';
+      html += '<div class="exc-tree-actions">';
+      html += '<button class="exc-tree-act" onclick="excFaultTreeRename(this, ' + l2Id + ', \'' + escAttr(l2.name) + '\')">✎</button>';
+      html += '<button class="exc-tree-act del" onclick="excFaultTreeDelete(' + l2Id + ')">✕</button>';
+      html += '<button class="exc-tree-act" onclick="excFaultTreeAddChild(this, \'L3\', ' + l2Id + ')">+</button>';
+      html += '</div>';
+      html += '</div>';
+      (l2.columns || []).forEach(l3 => {
+        html += '<div class="exc-tree-node">';
+        html += '<div class="exc-tree-row">';
+        html += '<span class="exc-tree-icon">●</span>';
+        html += '<span class="exc-tree-label">' + escHtml(l3.name) + '</span>';
+        html += '<div class="exc-tree-actions">';
+        html += '<button class="exc-tree-act" onclick="excFaultTreeRename(this, ' + l3.id + ', \'' + escAttr(l3.name) + '\')">✎</button>';
+        html += '<button class="exc-tree-act del" onclick="excFaultTreeDelete(' + l3.id + ')">✕</button>';
+        html += '</div>';
+        html += '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+    });
+    html += '</div>';
+  });
+  body.innerHTML = html || '<div style="padding:16px;color:var(--text-muted);text-align:center;">暂无异常分类数据</div>';
+}
+
+async function excFaultTreeApiCall(data) {
+  const res = await fetch('/api/issues/fault-types/edit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...data, sheet_id: excState.activeSheetId }),
+  });
+  return res.json();
+}
+
+async function excFaultTreeAdd(btn, level, parentId) {
+  const form = btn.parentElement;
+  const name = form.querySelector('input').value.trim();
+  if (!name) return;
+  const data = await excFaultTreeApiCall({ action: 'add', level, name, parent_id: parentId });
+  if (data.ok) {
+    excCache.loaded = false;
+    await excLoadFaultTree();
+    await excLoadAll();
+    excBuild();
+  } else { alert(data.message || '添加失败'); }
+}
+
+async function excFaultTreeDelete(id) {
+  if (!confirm('确定删除？子分类和关联场景也将被删除。')) return;
+  const data = await excFaultTreeApiCall({ action: 'delete', id });
+  if (data.ok) {
+    excCache.loaded = false;
+    await excLoadFaultTree();
+    await excLoadAll();
+    excBuild();
+  } else { alert(data.message || '删除失败'); }
+}
+
+async function excFaultTreeRename(btn, id, oldName) {
+  const newName = prompt('新名称:', oldName);
+  if (!newName || !newName.trim() || newName.trim() === oldName) return;
+  const data = await excFaultTreeApiCall({ action: 'rename', id, name: newName.trim() });
+  if (data.ok) {
+    excCache.loaded = false;
+    await excLoadFaultTree();
+    await excLoadAll();
+    excBuild();
+  } else { alert(data.message || '重命名失败'); }
+}
+
+function excFaultTreeAddChild(btn, level, parentId) {
+  const node = btn.closest('.exc-tree-node');
+  const existing = node.querySelector(':scope > .exc-tree-inline-form');
+  if (existing) { existing.remove(); return; }
+  const form = document.createElement('div');
+  form.className = 'exc-tree-inline-form';
+  form.innerHTML = '<input placeholder="' + level + ' 名称" id="exc-tree-new-ft"> <button onclick="excFaultTreeAdd(this, \'' + level + '\', ' + parentId + ')">确定</button> <button class="cancel" onclick="this.parentElement.remove()">取消</button>';
+  node.appendChild(form);
+  form.querySelector('input').focus();
+}
+
+/* ===== Sheet Management ===== */
+
+async function excInitSheets() {
+  try {
+    const res = await fetch('/api/sheets');
+    excState.sheets = await res.json();
+  } catch {
+    excState.sheets = [{ id: 1, name: '基础异常', is_base: 1 }];
+  }
+  excRenderSheetTabs();
+  // Bind "+" button
+  document.getElementById('exc-sheet-add').addEventListener('click', excAddSheet);
+}
+
+function excRenderSheetTabs() {
+  const container = document.getElementById('exc-sheet-tabs');
+  container.innerHTML = '';
+  excState.sheets.forEach(s => {
+    const tab = document.createElement('button');
+    tab.className = 'exc-sheet-tab' + (s.id === excState.activeSheetId ? ' is-active' : '');
+    tab.dataset.sheetId = s.id;
+    tab.innerHTML = '<span class="exc-sheet-tab-name">' + escHtml(s.name) + '</span>'
+      + (s.is_base ? '<span class="exc-sheet-tab-badge">BASE</span>' : '');
+    tab.addEventListener('click', () => excSwitchSheet(s.id));
+    if (!s.is_base) {
+      tab.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        excSheetContextMenu(e, s);
+      });
+    }
+    container.appendChild(tab);
+  });
+}
+
+async function excSwitchSheet(sheetId) {
+  if (sheetId === excState.activeSheetId && excCache.loaded) return;
+  excState.activeSheetId = sheetId;
+  excCache.loaded = false;
+  excRenderSheetTabs();
+  await excLoadAll();
+  excBuild();
+}
+
+async function excAddSheet() {
+  const name = prompt('请输入异常表名称:');
+  if (!name || !name.trim()) return;
+  try {
+    const res = await fetch('/api/sheets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      excState.sheets.push({ id: data.sheet_id, name: data.name, is_base: 0 });
+      await excSwitchSheet(data.sheet_id);
+    } else {
+      alert(data.message || '创建失败');
+    }
+  } catch (err) {
+    alert('创建失败: ' + err.message);
+  }
+}
+
+function excSheetContextMenu(e, sheet) {
+  const existing = document.querySelector('.exc-sheet-ctx');
+  if (existing) existing.remove();
+  const menu = document.createElement('div');
+  menu.className = 'exc-sheet-ctx';
+  menu.style.cssText = 'position:fixed;left:' + e.clientX + 'px;top:' + e.clientY + 'px;background:var(--panel);border:1px solid var(--panel-border);border-radius:var(--radius);box-shadow:var(--shadow);z-index:1000;padding:4px 0;min-width:100px;';
+  const items = [
+    { label: '重命名', action: () => excRenameSheet(sheet) },
+    { label: '删除', action: () => excDeleteSheet(sheet) },
+  ];
+  items.forEach(item => {
+    const btn = document.createElement('button');
+    btn.textContent = item.label;
+    btn.style.cssText = 'display:block;width:100%;padding:6px 14px;border:none;background:none;color:var(--text);font-size:13px;cursor:pointer;text-align:left;';
+    btn.addEventListener('mouseenter', () => btn.style.background = 'var(--panel-border)');
+    btn.addEventListener('mouseleave', () => btn.style.background = 'none');
+    btn.addEventListener('click', () => { menu.remove(); item.action(); });
+    menu.appendChild(btn);
+  });
+  document.body.appendChild(menu);
+  const close = (ev) => {
+    if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('click', close); }
+  };
+  setTimeout(() => document.addEventListener('click', close), 0);
+}
+
+async function excRenameSheet(sheet) {
+  const name = prompt('新名称:', sheet.name);
+  if (!name || !name.trim() || name.trim() === sheet.name) return;
+  try {
+    const res = await fetch('/api/sheets/' + sheet.id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      sheet.name = name.trim();
+      excRenderSheetTabs();
+    } else {
+      alert(data.message || '重命名失败');
+    }
+  } catch (err) {
+    alert('重命名失败: ' + err.message);
+  }
+}
+
+async function excDeleteSheet(sheet) {
+  if (!confirm('确定删除异常表 "' + sheet.name + '"？此操作不可恢复。')) return;
+  try {
+    const res = await fetch('/api/sheets/' + sheet.id, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.ok) {
+      excState.sheets = excState.sheets.filter(s => s.id !== sheet.id);
+      if (excState.activeSheetId === sheet.id) {
+        await excSwitchSheet(1);
+      } else {
+        excRenderSheetTabs();
+      }
+    } else {
+      alert(data.message || '删除失败');
+    }
+  } catch (err) {
+    alert('删除失败: ' + err.message);
+  }
+}
+
+// Initialize sheets on load
+excInitSheets();
 
 document.addEventListener('langchange', () => {
   if (excCache.loaded) excBuild();
