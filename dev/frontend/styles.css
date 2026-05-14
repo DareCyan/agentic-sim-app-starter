@@ -2071,31 +2071,6 @@ p {
   color: var(--accent);
 }
 
-/* Editor mode tabs */
-.exc-editor-tabs {
-  display: flex;
-  background: var(--bg-2);
-  border-radius: 6px;
-  padding: 2px;
-  gap: 2px;
-}
-.exc-editor-tab {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  font-size: 12px;
-  padding: 4px 12px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all .12s;
-}
-.exc-editor-tab.is-active {
-  background: var(--panel);
-  color: var(--text);
-  font-weight: 500;
-  box-shadow: 0 1px 2px rgba(0,0,0,.06);
-}
-
 /* JSON editor body */
 .exc-json-body {
   padding: 12px 16px;
@@ -2444,23 +2419,18 @@ p {
 }
 .exc-stat-edit {
   position: absolute;
-  top: -6px;
-  right: -12px;
-  border: 1px solid var(--panel-border);
-  background: var(--panel);
+  top: -4px;
+  right: -8px;
+  border: none;
+  background: none;
   color: var(--text-muted);
   cursor: pointer;
   font-size: 10px;
-  width: 18px;
-  height: 18px;
   padding: 0;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color .12s, border-color .12s;
+  line-height: 1;
+  transition: color .12s;
 }
-.exc-stat-edit:hover { color: var(--accent); border-color: var(--accent); }
+.exc-stat-edit:hover { color: var(--accent); }
 .exc-stat-num-wrap {
   position: relative;
   display: inline-block;
@@ -3498,18 +3468,46 @@ td.row-selected {
   display: flex;
   flex-direction: column;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
-  overflow: hidden;
 }
 .exc-modal-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  position: relative;
   padding: 16px 20px;
   border-bottom: 1px solid var(--panel-border);
   font-weight: 600;
   font-size: 15px;
   flex-shrink: 0;
   color: var(--text);
+}
+.exc-modal-header h3 {
+  flex: 0 0 auto;
+}
+.exc-editor-tabs {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  background: var(--bg-2);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+.exc-editor-tab {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all .12s;
+}
+.exc-editor-tab.is-active {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(0,0,0,.06);
 }
 .exc-modal-close {
   background: none;
@@ -3527,8 +3525,7 @@ td.row-selected {
 .exc-modal-body {
   padding: 0;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
+  min-height: 0;
 }
 
 /* Modal context bar */
