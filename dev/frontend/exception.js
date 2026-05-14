@@ -62,6 +62,11 @@ document.getElementById('exc-matrix-wrap').addEventListener('wheel', (e) => {
 
 async function excLoadAll() {
   if (excCache.loaded) return;
+  const wrap = document.getElementById('exc-matrix-wrap');
+  const stats = document.getElementById('exc-stats');
+  // Show loading
+  if (wrap) wrap.innerHTML = '<div class="exc-loading"><div class="exc-loading-spinner"></div><span>加载中...</span></div>';
+  if (stats) stats.innerHTML = '';
   try {
     const sid = excState.activeSheetId;
     const [apps, matrix, details] = await Promise.all([
@@ -201,10 +206,10 @@ function excBuildStats() {
   let html = '';
   html += '<div class="exc-stat-item"><span class="exc-stat-num exc-stat-accent">' + scenarios + '</span><span class="exc-stat-label">' + t('exc.stat-scenarios') + '</span></div>';
   html += '<div class="exc-stat-item"><span class="exc-stat-num">' + total + '</span><span class="exc-stat-label">' + t('exc.stat-total') + '</span></div>';
-  html += '<div class="exc-stat-item"><span class="exc-stat-num">' + apps + (canEdit ? ' <button class="exc-stat-edit" id="exc-edit-app-tree" title="编辑应用树">✎</button>' : '') + '</span><span class="exc-stat-label">' + t('exc.stat-apps') + '</span></div>';
-  html += '<div class="exc-stat-item"><span class="exc-stat-num">' + flows + '</span><span class="exc-stat-label">' + (currentLang === 'en' ? 'Flows' : '流程') + '</span></div>';
-  html += '<div class="exc-stat-item"><span class="exc-stat-num">' + colCount + '</span><span class="exc-stat-label">' + t('exc.stat-types') + '</span></div>';
-  html += '<div class="exc-stat-item"><span class="exc-stat-num">' + l2Count + (canEdit ? ' <button class="exc-stat-edit" id="exc-edit-fault-tree" title="编辑异常分类树">✎</button>' : '') + '</span><span class="exc-stat-label">' + t('exc.stat-domains') + '</span></div>';
+  html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + apps + (canEdit ? '<button class="exc-stat-edit" id="exc-edit-app-tree" title="编辑应用树">✎</button>' : '') + '</span><span class="exc-stat-label">' + t('exc.stat-apps') + '</span></div>';
+  html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + flows + '</span><span class="exc-stat-label">' + (currentLang === 'en' ? 'Flows' : '流程') + '</span></div>';
+  html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + colCount + '</span><span class="exc-stat-label">' + t('exc.stat-types') + '</span></div>';
+  html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + l2Count + (canEdit ? '<button class="exc-stat-edit" id="exc-edit-fault-tree" title="编辑异常分类树">✎</button>' : '') + '</span><span class="exc-stat-label">' + t('exc.stat-domains') + '</span></div>';
 
   html += '<div class="exc-stat-pri">';
   html += '<button class="exc-add-btn" id="exc-add-btn">' + t('exc.add-btn') + '</button>';
@@ -1531,10 +1536,22 @@ function excRenderSheetTabs() {
     const tab = document.createElement('button');
     tab.className = 'exc-sheet-tab' + (s.id === excState.activeSheetId ? ' is-active' : '');
     tab.dataset.sheetId = s.id;
-    tab.innerHTML = '<span class="exc-sheet-tab-name">' + escHtml(s.name) + '</span>'
-      + (s.is_base ? '<span class="exc-sheet-tab-badge">BASE</span>' : '');
-    tab.addEventListener('click', () => excSwitchSheet(s.id));
+    let inner = '<span class="exc-sheet-tab-name">' + escHtml(s.name) + '</span>';
+    if (s.is_base) {
+      inner += '<span class="exc-sheet-tab-badge">BASE</span>';
+    } else {
+      inner += '<span class="exc-sheet-tab-del" title="删除" data-del="' + s.id + '">✕</span>';
+    }
+    tab.innerHTML = inner;
+    tab.addEventListener('click', (e) => {
+      if (e.target.classList.contains('exc-sheet-tab-del')) return;
+      excSwitchSheet(s.id);
+    });
     if (!s.is_base) {
+      tab.querySelector('.exc-sheet-tab-del').addEventListener('click', (e) => {
+        e.stopPropagation();
+        excDeleteSheet(s);
+      });
       tab.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         excSheetContextMenu(e, s);
@@ -1579,16 +1596,17 @@ function excSheetContextMenu(e, sheet) {
   if (existing) existing.remove();
   const menu = document.createElement('div');
   menu.className = 'exc-sheet-ctx';
-  menu.style.cssText = 'position:fixed;left:' + e.clientX + 'px;top:' + e.clientY + 'px;background:var(--panel);border:1px solid var(--panel-border);border-radius:var(--radius);box-shadow:var(--shadow);z-index:1000;padding:4px 0;min-width:100px;';
+  menu.style.cssText = 'position:fixed;left:' + e.clientX + 'px;top:' + e.clientY + 'px;background:#fff;border:1px solid #e2e5ec;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);z-index:1000;padding:4px 0;min-width:110px;';
   const items = [
     { label: '重命名', action: () => excRenameSheet(sheet) },
-    { label: '删除', action: () => excDeleteSheet(sheet) },
+    { label: '删除', action: () => excDeleteSheet(sheet), danger: true },
   ];
   items.forEach(item => {
     const btn = document.createElement('button');
     btn.textContent = item.label;
-    btn.style.cssText = 'display:block;width:100%;padding:6px 14px;border:none;background:none;color:var(--text);font-size:13px;cursor:pointer;text-align:left;';
-    btn.addEventListener('mouseenter', () => btn.style.background = 'var(--panel-border)');
+    const color = item.danger ? '#c25450' : '#1a1d23';
+    btn.style.cssText = 'display:block;width:100%;padding:7px 16px;border:none;background:none;color:' + color + ';font-size:13px;cursor:pointer;text-align:left;border-radius:4px;margin:0 2px;';
+    btn.addEventListener('mouseenter', () => btn.style.background = '#f4f5f9');
     btn.addEventListener('mouseleave', () => btn.style.background = 'none');
     btn.addEventListener('click', () => { menu.remove(); item.action(); });
     menu.appendChild(btn);

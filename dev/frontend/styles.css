@@ -2040,6 +2040,17 @@ p {
   padding: 1px 5px;
   border-radius: 6px;
 }
+.exc-sheet-tab-del {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0;
+  margin-left: 2px;
+  padding: 0 2px;
+  border-radius: 3px;
+  transition: opacity .12s, color .12s, background .12s;
+}
+.exc-sheet-tab:hover .exc-sheet-tab-del { opacity: .6; }
+.exc-sheet-tab-del:hover { opacity: 1 !important; color: #c25450; background: rgba(194,84,80,.1); }
 .exc-sheet-add {
   width: 30px;
   height: 30px;
@@ -2063,7 +2074,8 @@ p {
 /* ===== Tree Editor ===== */
 .exc-tree-body {
   overflow-y: auto;
-  max-height: 55vh;
+  flex: 1;
+  min-height: 0;
   padding: 12px 16px;
 }
 .exc-tree-footer {
@@ -2310,6 +2322,29 @@ p {
   opacity: .4;
 }
 
+/* Loading spinner */
+.exc-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.exc-loading-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--panel-border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: exc-spin .6s linear infinite;
+}
+@keyframes exc-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Content area */
 .exc-content {
   height: 100%;
@@ -2360,18 +2395,31 @@ p {
   color: var(--accent);
 }
 .exc-stat-edit {
+  position: absolute;
+  top: -6px;
+  right: -10px;
   border: none;
-  background: none;
+  background: var(--panel);
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 12px;
-  padding: 1px 4px;
-  border-radius: 3px;
-  vertical-align: middle;
-  opacity: .5;
-  transition: opacity .12s, color .12s;
+  font-size: 11px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity .12s, color .12s, box-shadow .12s;
+  box-shadow: 0 1px 3px rgba(0,0,0,.1);
 }
-.exc-stat-edit:hover { opacity: 1; color: var(--accent); }
+.exc-stat-num-wrap:hover .exc-stat-edit { opacity: 1; }
+.exc-stat-edit:hover { color: var(--accent); box-shadow: 0 1px 4px rgba(0,0,0,.18); }
+.exc-stat-num-wrap {
+  position: relative;
+  display: inline-block;
+}
 
 .exc-stat-pri {
   display: flex;
