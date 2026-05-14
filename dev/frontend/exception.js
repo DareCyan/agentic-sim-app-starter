@@ -62,11 +62,17 @@ document.getElementById('exc-matrix-wrap').addEventListener('wheel', (e) => {
 
 async function excLoadAll() {
   if (excCache.loaded) return;
-  const wrap = document.getElementById('exc-matrix-wrap');
-  const stats = document.getElementById('exc-stats');
-  // Show loading
-  if (wrap) wrap.innerHTML = '<div class="exc-loading"><div class="exc-loading-spinner"></div><span>加载中...</span></div>';
-  if (stats) stats.innerHTML = '';
+  const area = document.getElementById('exc-content-area');
+  // Show full-pane loading overlay
+  let overlay = document.getElementById('exc-loading-overlay');
+  if (!overlay && area) {
+    overlay = document.createElement('div');
+    overlay.id = 'exc-loading-overlay';
+    overlay.className = 'exc-loading-overlay';
+    overlay.innerHTML = '<div class="exc-full-spinner"></div>';
+    area.prepend(overlay);
+  }
+  if (overlay) overlay.classList.remove('is-hidden');
   try {
     const sid = excState.activeSheetId;
     const [apps, matrix, details] = await Promise.all([
@@ -93,6 +99,8 @@ async function excLoadAll() {
     console.error('excLoadAll error:', e);
     document.getElementById('exc-matrix-wrap').innerHTML =
       '<div class="exc-empty">加载失败: ' + e.message + '</div>';
+  } finally {
+    if (overlay) overlay.classList.add('is-hidden');
   }
 }
 
