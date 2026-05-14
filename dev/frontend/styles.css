@@ -2444,12 +2444,12 @@ p {
 .exc-stat-edit {
   position: absolute;
   top: -6px;
-  right: -10px;
-  border: none;
+  right: -12px;
+  border: 1px solid var(--panel-border);
   background: var(--panel);
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 10px;
   width: 18px;
   height: 18px;
   padding: 0;
@@ -2457,12 +2457,9 @@ p {
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0;
-  transition: opacity .12s, color .12s, box-shadow .12s;
-  box-shadow: 0 1px 3px rgba(0,0,0,.1);
+  transition: color .12s, border-color .12s;
 }
-.exc-stat-num-wrap:hover .exc-stat-edit { opacity: 1; }
-.exc-stat-edit:hover { color: var(--accent); box-shadow: 0 1px 4px rgba(0,0,0,.18); }
+.exc-stat-edit:hover { color: var(--accent); border-color: var(--accent); }
 .exc-stat-num-wrap {
   position: relative;
   display: inline-block;
