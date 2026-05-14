@@ -2281,10 +2281,23 @@ p {
 }
 .exc-tree-leaf:hover .exc-tree-leaf-dot { background: var(--accent); }
 .exc-tree-leaf-name {
-  flex: 1;
   font-size: 13px;
   color: var(--text);
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.exc-tree-leaf-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.exc-tree-leaf-desc {
+  font-size: 11px;
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

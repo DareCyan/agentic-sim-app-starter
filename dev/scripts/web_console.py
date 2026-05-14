@@ -1817,8 +1817,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                         l3_name = (l3.get("name") or l3 if isinstance(l3, str) else "").strip()
                         if not l3_name:
                             continue
-                        db.execute("INSERT INTO fault_types (sheet_id, parent_id, level, name, description) VALUES (?, ?, 'L3', ?, '')",
-                                   (sid, l2_id, l3_name))
+                        l3_desc = (l3.get("description") or "").strip() if isinstance(l3, dict) else ""
+                        db.execute("INSERT INTO fault_types (sheet_id, parent_id, level, name, description) VALUES (?, ?, 'L3', ?, ?)",
+                                   (sid, l2_id, l3_name, l3_desc))
                         count += 1
             db.commit()
             self._send_json({"ok": True, "count": count})

@@ -1439,12 +1439,15 @@ function excOpenFaultTree() {
 }
 
 function excSyncFaultJson() {
-  // Build clean JSON from matrix data (strip IDs)
   const tree = (excFaultTreeData || []).map(l1 => ({
     name: l1.column,
     types: (l1.types || []).map(l2 => ({
       name: l2.name,
-      columns: (l2.columns || []).map(l3 => l3.name),
+      columns: (l2.columns || []).map(l3 => {
+        const obj = { name: l3.name };
+        if (l3.example) obj.description = l3.example;
+        return obj;
+      }),
     })),
   }));
   document.getElementById('exc-fault-json-editor').value = JSON.stringify(tree, null, 2);
@@ -1528,7 +1531,10 @@ function excRenderFaultTree() {
       cols.forEach(l3 => {
         html += '<div class="exc-tree-leaf">';
         html += '<span class="exc-tree-leaf-dot"></span>';
+        html += '<div class="exc-tree-leaf-info">';
         html += '<span class="exc-tree-leaf-name">' + escHtml(l3.name) + '</span>';
+        if (l3.example) html += '<span class="exc-tree-leaf-desc">' + escHtml(l3.example) + '</span>';
+        html += '</div>';
         html += '<div class="exc-tree-actions">';
         html += '<button class="exc-tree-act" onclick="excFaultTreeRename(this, ' + l3.id + ', \'' + escAttr(l3.name) + '\')" title="重命名">✎</button>';
         html += '<button class="exc-tree-act del" onclick="excFaultTreeDelete(' + l3.id + ')" title="删除">✕</button>';
