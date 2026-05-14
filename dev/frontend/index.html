@@ -478,14 +478,22 @@
 
     <!-- App Tree Editor Modal -->
     <div id="exc-app-tree-modal" class="exc-modal-overlay is-hidden">
-      <div class="exc-modal-box" style="max-width:500px;max-height:80vh;">
+      <div class="exc-modal-box" style="max-width:600px;max-height:80vh;">
         <div class="exc-modal-header">
           <h3>编辑应用树</h3>
+          <div class="exc-editor-tabs" id="exc-app-editor-tabs">
+            <button class="exc-editor-tab is-active" data-mode="tree">Tree</button>
+            <button class="exc-editor-tab" data-mode="json">JSON</button>
+          </div>
           <button class="exc-modal-close" id="exc-app-tree-close">&times;</button>
         </div>
         <div class="exc-modal-body exc-tree-body" id="exc-app-tree-body"></div>
+        <div class="exc-modal-body exc-json-body is-hidden" id="exc-app-json-body">
+          <textarea class="exc-json-editor" id="exc-app-json-editor" spellcheck="false"></textarea>
+        </div>
         <div class="exc-tree-footer">
           <button class="exc-tree-add-root" id="exc-app-tree-add">+ 添加应用</button>
+          <button class="exc-tree-add-root is-hidden" id="exc-app-json-save">保存 JSON</button>
           <span class="exc-tree-footer-info" id="exc-app-tree-info"></span>
         </div>
       </div>
@@ -493,14 +501,22 @@
 
     <!-- Fault Type Tree Editor Modal -->
     <div id="exc-fault-tree-modal" class="exc-modal-overlay is-hidden">
-      <div class="exc-modal-box" style="max-width:600px;max-height:80vh;">
+      <div class="exc-modal-box" style="max-width:700px;max-height:80vh;">
         <div class="exc-modal-header">
           <h3>编辑异常分类树</h3>
+          <div class="exc-editor-tabs" id="exc-fault-editor-tabs">
+            <button class="exc-editor-tab is-active" data-mode="tree">Tree</button>
+            <button class="exc-editor-tab" data-mode="json">JSON</button>
+          </div>
           <button class="exc-modal-close" id="exc-fault-tree-close">&times;</button>
         </div>
         <div class="exc-modal-body exc-tree-body" id="exc-fault-tree-body"></div>
+        <div class="exc-modal-body exc-json-body is-hidden" id="exc-fault-json-body">
+          <textarea class="exc-json-editor" id="exc-fault-json-editor" spellcheck="false"></textarea>
+        </div>
         <div class="exc-tree-footer">
           <button class="exc-tree-add-root" id="exc-fault-tree-add">+ 添加分类</button>
+          <button class="exc-tree-add-root is-hidden" id="exc-fault-json-save">保存 JSON</button>
           <span class="exc-tree-footer-info" id="exc-fault-tree-info"></span>
         </div>
       </div>

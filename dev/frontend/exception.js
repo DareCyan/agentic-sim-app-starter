@@ -201,15 +201,14 @@ function excBuildStats() {
   const flows = excState.rows.filter(r => r.type === 'flow').length;
   const colCount = excState.columns.length;
   const l2Count = excState.l2Groups.length;
-  const canEdit = !excState.sheets.find(s => s.id === excState.activeSheetId)?.is_base;
 
   let html = '';
   html += '<div class="exc-stat-item"><span class="exc-stat-num exc-stat-accent">' + scenarios + '</span><span class="exc-stat-label">' + t('exc.stat-scenarios') + '</span></div>';
   html += '<div class="exc-stat-item"><span class="exc-stat-num">' + total + '</span><span class="exc-stat-label">' + t('exc.stat-total') + '</span></div>';
-  html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + apps + (canEdit ? '<button class="exc-stat-edit" id="exc-edit-app-tree" title="编辑应用树">✎</button>' : '') + '</span><span class="exc-stat-label">' + t('exc.stat-apps') + '</span></div>';
+  html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + apps + '<button class="exc-stat-edit" id="exc-edit-app-tree" title="编辑应用树">✎</button></span><span class="exc-stat-label">' + t('exc.stat-apps') + '</span></div>';
   html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + flows + '</span><span class="exc-stat-label">' + (currentLang === 'en' ? 'Flows' : '流程') + '</span></div>';
   html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + colCount + '</span><span class="exc-stat-label">' + t('exc.stat-types') + '</span></div>';
-  html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + l2Count + (canEdit ? '<button class="exc-stat-edit" id="exc-edit-fault-tree" title="编辑异常分类树">✎</button>' : '') + '</span><span class="exc-stat-label">' + t('exc.stat-domains') + '</span></div>';
+  html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + l2Count + '<button class="exc-stat-edit" id="exc-edit-fault-tree" title="编辑异常分类树">✎</button></span><span class="exc-stat-label">' + t('exc.stat-domains') + '</span></div>';
 
   html += '<div class="exc-stat-pri">';
   html += '<button class="exc-add-btn" id="exc-add-btn">' + t('exc.add-btn') + '</button>';
@@ -1201,6 +1200,7 @@ function excOpenAppTree() {
   const modal = document.getElementById('exc-app-tree-modal');
   modal.classList.remove('is-hidden');
   excRenderAppTree();
+  excSyncAppJson();
   document.getElementById('exc-app-tree-close').onclick = () => modal.classList.add('is-hidden');
   document.getElementById('exc-app-tree-add').onclick = () => {
     const body = document.getElementById('exc-app-tree-body');
@@ -1212,6 +1212,49 @@ function excOpenAppTree() {
     body.prepend(form);
     form.querySelector('input').focus();
   };
+  // Tab switching
+  const tabs = modal.querySelectorAll('.exc-editor-tab');
+  tabs.forEach(tab => tab.onclick = () => {
+    tabs.forEach(t => t.classList.remove('is-active'));
+    tab.classList.add('is-active');
+    const isJson = tab.dataset.mode === 'json';
+    document.getElementById('exc-app-tree-body').classList.toggle('is-hidden', isJson);
+    document.getElementById('exc-app-json-body').classList.toggle('is-hidden', !isJson);
+    document.getElementById('exc-app-tree-add').classList.toggle('is-hidden', isJson);
+    document.getElementById('exc-app-json-save').classList.toggle('is-hidden', !isJson);
+    if (isJson) excSyncAppJson();
+  });
+  document.getElementById('exc-app-json-save').onclick = excSaveAppJson;
+}
+
+function excSyncAppJson() {
+  const apps = excState.apps.map(a => ({ category: a.category, flow: a.flow }));
+  document.getElementById('exc-app-json-editor').value = JSON.stringify(apps, null, 2);
+}
+
+async function excSaveAppJson() {
+  const editor = document.getElementById('exc-app-json-editor');
+  try {
+    const apps = JSON.parse(editor.value);
+    if (!Array.isArray(apps)) throw new Error('必须是数组');
+    const res = await fetch('/api/issues/apps/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sheet_id: excState.activeSheetId, apps }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      excCache.loaded = false;
+      await excLoadAll();
+      excRenderAppTree();
+      excBuildStats();
+      alert('保存成功，已更新 ' + data.count + ' 条');
+    } else {
+      alert(data.message || '保存失败');
+    }
+  } catch (e) {
+    alert('JSON 格式错误: ' + e.message);
+  }
 }
 
 function excRenderAppTree() {
@@ -1371,6 +1414,56 @@ function excOpenFaultTree() {
     body.prepend(form);
     form.querySelector('input').focus();
   };
+  // Tab switching
+  const tabs = modal.querySelectorAll('.exc-editor-tab');
+  tabs.forEach(tab => tab.onclick = () => {
+    tabs.forEach(t => t.classList.remove('is-active'));
+    tab.classList.add('is-active');
+    const isJson = tab.dataset.mode === 'json';
+    document.getElementById('exc-fault-tree-body').classList.toggle('is-hidden', isJson);
+    document.getElementById('exc-fault-json-body').classList.toggle('is-hidden', !isJson);
+    document.getElementById('exc-fault-tree-add').classList.toggle('is-hidden', isJson);
+    document.getElementById('exc-fault-json-save').classList.toggle('is-hidden', !isJson);
+    if (isJson) excSyncFaultJson();
+  });
+  document.getElementById('exc-fault-json-save').onclick = excSaveFaultJson;
+}
+
+function excSyncFaultJson() {
+  // Build clean JSON from matrix data (strip IDs)
+  const tree = (excFaultTreeData || []).map(l1 => ({
+    name: l1.column,
+    types: (l1.types || []).map(l2 => ({
+      name: l2.name,
+      columns: (l2.columns || []).map(l3 => l3.name),
+    })),
+  }));
+  document.getElementById('exc-fault-json-editor').value = JSON.stringify(tree, null, 2);
+}
+
+async function excSaveFaultJson() {
+  const editor = document.getElementById('exc-fault-json-editor');
+  try {
+    const tree = JSON.parse(editor.value);
+    if (!Array.isArray(tree)) throw new Error('必须是数组');
+    const res = await fetch('/api/issues/fault-types/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sheet_id: excState.activeSheetId, tree }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      excCache.loaded = false;
+      await excLoadFaultTree();
+      await excLoadAll();
+      excBuild();
+      alert('保存成功，已更新 ' + data.count + ' 条');
+    } else {
+      alert(data.message || '保存失败');
+    }
+  } catch (e) {
+    alert('JSON 格式错误: ' + e.message);
+  }
 }
 
 async function excLoadFaultTree() {

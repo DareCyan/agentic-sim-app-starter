@@ -1743,6 +1743,87 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "message": "unknown action"}, HTTPStatus.BAD_REQUEST)
             return
 
+        # ===== Bulk replace apps from JSON =====
+        if parsed.path == "/api/issues/apps/bulk":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"[]"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not isinstance(data, dict):
+                self._send_json({"ok": False, "message": "expected {sheet_id, apps: [{category,flow}]}"}, HTTPStatus.BAD_REQUEST)
+                return
+            sid = int(data.get("sheet_id", 1))
+            apps = data.get("apps", [])
+            if not isinstance(apps, list):
+                self._send_json({"ok": False, "message": "apps must be an array"}, HTTPStatus.BAD_REQUEST)
+                return
+            db = self.server.db
+            db.execute("DELETE FROM scenarios WHERE sheet_id=?", (sid,))
+            db.execute("DELETE FROM apps WHERE sheet_id=?", (sid,))
+            for item in apps:
+                cat = (item.get("category") or "").strip()
+                flow = (item.get("flow") or "").strip()
+                if cat and flow:
+                    db.execute("INSERT INTO apps (sheet_id, category, flow) VALUES (?, ?, ?)", (sid, cat, flow))
+            db.commit()
+            self._send_json({"ok": True, "count": len(apps)})
+            return
+
+        # ===== Bulk replace fault_types from JSON =====
+        if parsed.path == "/api/issues/fault-types/bulk":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len) if content_len else b"[]"
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self._send_json({"ok": False, "message": "invalid json"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not isinstance(data, dict):
+                self._send_json({"ok": False, "message": "expected {sheet_id, tree: [{name, types: [...]}]}"}, HTTPStatus.BAD_REQUEST)
+                return
+            sid = int(data.get("sheet_id", 1))
+            tree = data.get("tree", [])
+            if not isinstance(tree, list):
+                self._send_json({"ok": False, "message": "tree must be an array"}, HTTPStatus.BAD_REQUEST)
+                return
+            db = self.server.db
+            # Delete old fault types and their scenarios for this sheet
+            old_fts = db.execute("SELECT id FROM fault_types WHERE sheet_id=?", (sid,)).fetchall()
+            for (ft_id,) in old_fts:
+                db.execute("DELETE FROM scenarios WHERE fault_type_id=? AND sheet_id=?", (ft_id, sid))
+            db.execute("DELETE FROM fault_types WHERE sheet_id=?", (sid,))
+            # Insert new tree
+            count = 0
+            for l1 in tree:
+                l1_name = (l1.get("name") or "").strip()
+                if not l1_name:
+                    continue
+                c1 = db.execute("INSERT INTO fault_types (sheet_id, parent_id, level, name, description) VALUES (?, NULL, 'L1', ?, '')",
+                                (sid, l1_name))
+                l1_id = c1.lastrowid
+                count += 1
+                for l2 in (l1.get("types") or []):
+                    l2_name = (l2.get("name") or "").strip()
+                    if not l2_name:
+                        continue
+                    c2 = db.execute("INSERT INTO fault_types (sheet_id, parent_id, level, name, description) VALUES (?, ?, 'L2', ?, '')",
+                                    (sid, l1_id, l2_name))
+                    l2_id = c2.lastrowid
+                    count += 1
+                    for l3 in (l2.get("columns") or []):
+                        l3_name = (l3.get("name") or l3 if isinstance(l3, str) else "").strip()
+                        if not l3_name:
+                            continue
+                        db.execute("INSERT INTO fault_types (sheet_id, parent_id, level, name, description) VALUES (?, ?, 'L3', ?, '')",
+                                   (sid, l2_id, l3_name))
+                        count += 1
+            db.commit()
+            self._send_json({"ok": True, "count": count})
+            return
+
         pipeline_key = get_selected_pipeline(self)
         if parsed.path == "/api/pipelines/current/terminate":
             context = get_pipeline_context(self.server.repo_root, self.server.config, pipeline_key)
