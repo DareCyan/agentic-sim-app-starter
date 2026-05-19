@@ -2437,14 +2437,15 @@ p {
 }
 .exc-stat-edit {
   position: absolute;
-  top: -4px;
-  right: -8px;
+  top: 50%;
+  right: -16px;
+  transform: translateY(-50%);
   border: none;
   background: none;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 10px;
-  padding: 0;
+  font-size: 11px;
+  padding: 2px;
   line-height: 1;
   transition: color .12s;
 }
