@@ -315,9 +315,9 @@
     <!-- Config Modal -->
     <div id="config-modal" class="config-modal-overlay is-hidden">
       <div class="config-modal-box">
+        <button class="config-modal-close" id="config-modal-close">&times;</button>
         <div class="config-modal-header">
           <span class="config-modal-title" data-i18n="config.title">大模型配置</span>
-          <button class="config-modal-close" id="config-modal-close">&times;</button>
         </div>
         <div class="config-modal-body">
           <div class="config-field">
@@ -351,9 +351,9 @@
     <!-- Questions Modal -->
     <div id="exc-modal" class="exc-modal-overlay is-hidden">
       <div class="exc-modal-box">
+        <button id="exc-modal-close" class="exc-modal-close">&times;</button>
         <div class="exc-modal-header">
           <span id="exc-modal-title-text" data-i18n="exc.modal-title">示例场景</span>
-          <button id="exc-modal-close" class="exc-modal-close">&times;</button>
         </div>
         <div class="exc-modal-body" id="exc-modal-body"></div>
       </div>
@@ -362,9 +362,9 @@
     <!-- Add Scenario Modal -->
     <div id="exc-add-modal" class="exc-modal-overlay is-hidden">
       <div class="exc-modal-box exc-add-modal-box">
+        <button class="exc-modal-close" id="exc-add-close">&times;</button>
         <div class="exc-modal-header">
           <span data-i18n="exc.add-title">新增异常场景</span>
-          <button class="exc-modal-close" id="exc-add-close">&times;</button>
         </div>
         <div class="exc-modal-body" id="exc-add-body">
           <!-- Step 1: Input -->
@@ -437,9 +437,9 @@
     <!-- Generalize Modal - Choose Direction -->
     <div id="exc-generalize-modal" class="exc-modal-overlay is-hidden">
       <div class="exc-modal-box exc-generalize-modal-box">
+        <button class="exc-modal-close" id="exc-generalize-close">&times;</button>
         <div class="exc-modal-header">
           <span>选择泛化方向</span>
-          <button class="exc-modal-close" id="exc-generalize-close">&times;</button>
         </div>
         <div class="exc-modal-body exc-generalize-body">
           <p class="exc-generalize-desc">基于示例场景 "<span id="exc-generalize-source"></span>"</p>
@@ -462,9 +462,9 @@
     <!-- Generalize Confirm Modal -->
     <div id="exc-generalize-confirm-modal" class="exc-modal-overlay is-hidden">
       <div class="exc-modal-box exc-generalize-confirm-box">
+        <button class="exc-modal-close" id="exc-generalize-confirm-close">&times;</button>
         <div class="exc-modal-header">
           <span>泛化结果确认</span>
-          <button class="exc-modal-close" id="exc-generalize-confirm-close">&times;</button>
         </div>
         <div class="exc-modal-body" id="exc-generalize-confirm-body">
           <!-- Results will be inserted here -->
@@ -479,13 +479,13 @@
     <!-- App Tree Editor Modal -->
     <div id="exc-app-tree-modal" class="exc-modal-overlay is-hidden">
       <div class="exc-modal-box" style="max-width:600px;max-height:80vh;">
+        <button class="exc-modal-close" id="exc-app-tree-close">&times;</button>
         <div class="exc-modal-header">
           <h3>编辑应用树</h3>
           <div class="exc-editor-tabs" id="exc-app-editor-tabs">
             <button class="exc-editor-tab is-active" data-mode="tree">Tree</button>
             <button class="exc-editor-tab" data-mode="json">JSON</button>
           </div>
-          <button class="exc-modal-close" id="exc-app-tree-close">&times;</button>
         </div>
         <div class="exc-modal-body exc-tree-body" id="exc-app-tree-body"></div>
         <div class="exc-modal-body exc-json-body is-hidden" id="exc-app-json-body">
@@ -502,13 +502,13 @@
     <!-- Fault Type Tree Editor Modal -->
     <div id="exc-fault-tree-modal" class="exc-modal-overlay is-hidden">
       <div class="exc-modal-box" style="max-width:700px;max-height:80vh;">
+        <button class="exc-modal-close" id="exc-fault-tree-close">&times;</button>
         <div class="exc-modal-header">
           <h3>编辑异常分类树</h3>
           <div class="exc-editor-tabs" id="exc-fault-editor-tabs">
             <button class="exc-editor-tab is-active" data-mode="tree">Tree</button>
             <button class="exc-editor-tab" data-mode="json">JSON</button>
           </div>
-          <button class="exc-modal-close" id="exc-fault-tree-close">&times;</button>
         </div>
         <div class="exc-modal-body exc-tree-body" id="exc-fault-tree-body"></div>
         <div class="exc-modal-body exc-json-body is-hidden" id="exc-fault-json-body">

@@ -214,10 +214,10 @@ function excBuildStats() {
   let html = '';
   html += '<div class="exc-stat-item"><span class="exc-stat-num exc-stat-accent">' + scenarios + '</span><span class="exc-stat-label">' + t('exc.stat-scenarios') + '</span></div>';
   html += '<div class="exc-stat-item"><span class="exc-stat-num">' + total + '</span><span class="exc-stat-label">' + t('exc.stat-total') + '</span></div>';
-  html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + apps + (canEdit ? '<button class="exc-stat-edit" id="exc-edit-app-tree" title="编辑应用树">✎</button>' : '') + '</span><span class="exc-stat-label">' + t('exc.stat-apps') + '</span></div>';
+  html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + apps + (canEdit ? '<button class="exc-stat-edit" id="exc-edit-app-tree" title="编辑应用树">🖉</button>' : '') + '</span><span class="exc-stat-label">' + t('exc.stat-apps') + '</span></div>';
   html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + flows + '</span><span class="exc-stat-label">' + (currentLang === 'en' ? 'Flows' : '流程') + '</span></div>';
   html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + colCount + '</span><span class="exc-stat-label">' + t('exc.stat-types') + '</span></div>';
-  html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + l2Count + (canEdit ? '<button class="exc-stat-edit" id="exc-edit-fault-tree" title="编辑异常分类树">✎</button>' : '') + '</span><span class="exc-stat-label">' + t('exc.stat-domains') + '</span></div>';
+  html += '<div class="exc-stat-item"><span class="exc-stat-num-wrap">' + l2Count + (canEdit ? '<button class="exc-stat-edit" id="exc-edit-fault-tree" title="编辑异常分类树">🖉</button>' : '') + '</span><span class="exc-stat-label">' + t('exc.stat-domains') + '</span></div>';
 
   html += '<div class="exc-stat-pri">';
   html += '<button class="exc-add-btn" id="exc-add-btn">' + t('exc.add-btn') + '</button>';
